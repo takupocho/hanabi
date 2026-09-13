@@ -2,9 +2,10 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>花火＆撮影シミュレーター (Ver 3.5.3)</title>
+    <title>花火＆撮影シミュレーター (Ver 3.5.5)</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
     <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
     <script>window.GSI=window.GSI||{};GSI.MUNI_ARRAY=GSI.MUNI_ARRAY||{};</script>
@@ -152,6 +153,7 @@
         .export-option small { display:block;margin-top:2px;color:#6f6874; }
         .primary-download { color:#fff;background:linear-gradient(135deg,#ff8a65,#ef668d);box-shadow:0 5px 12px rgba(223,91,122,.22); }
         .secondary-download { color:#fff;background:linear-gradient(135deg,#7aa9ed,#657bd4); }
+        .fireworks-only-download { color:#fff;background:linear-gradient(135deg,#f2a43b,#d66a20);box-shadow:0 5px 12px rgba(197,102,24,.22); }
         .reset-button { color:#807483;background:#eee9f0;font-size:11px; }
         .selector-row { gap:7px;margin-bottom:12px; }
         .input-group { line-height:1.35; }
@@ -208,7 +210,7 @@
     </style>
 </head>
 <body>
-    <h1>花火＆撮影シミュレーター (Ver 3.5.3)</h1>
+    <h1>花火＆撮影シミュレーター (Ver 3.5.5)</h1>
     <div class="main-row">
         <div id="map"></div>
         <div id="launchRotationPanel">
@@ -429,12 +431,13 @@
             </label>
             <button class="primary-download" onclick="generateKML(true)">✨ ツアー付きKMLをダウンロード</button>
             <button class="secondary-download" onclick="generateKML(false)">📷 カメラ固定KMLをダウンロード</button>
+            <button class="fireworks-only-download" title="COLLADA（.dae）3Dモデルを含むKMZを作成します" onclick="generateFireworksOnlyKMZ()">🎆 花火だけKMZで書き出す</button>
             <button class="reset-button" title="保存済みシミュレーションと花火グループは残したまま、編集中の内容だけを初期化します" onclick="resetAll()">編集中の設定をリセット</button>
         </div>
     </div>
 
     <script>
-        const VERSION = "3.5.3";
+        const VERSION = "3.5.5";
         const map = L.map('map', { center: [34.87438, 134.69885], zoom: 13 });
         const standardLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
         const aerialLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/{y}.jpg');
@@ -1299,6 +1302,195 @@
             const coreColor=fireworkColorOptions[normalizeFireworkColorKey(colorKey)].css||'#ffb340';
             markup+=`<circle cx="${centerX.toFixed(1)}" cy="${centerY.toFixed(1)}" r="${Math.max(3,lineWidth*1.8).toFixed(1)}" fill="#fff8cf" stroke="${coreColor}" stroke-width="2"/>`;
             return markup;
+        }
+
+        // ===== KMZ内蔵COLLADA（.dae）モデル生成 =====
+        // Google Earthの1モデルあたりの三角形上限に収まりやすいよう、花火1発につき1つのDAEを作る。
+        // 光跡は三角断面の細いチューブに変換し、視点を回しても立体として見えるようにする。
+        function daeColorRgba(cssColor) {
+            let hex=String(cssColor||'#ffffff').trim().replace('#','');
+            if(hex.length===3) hex=hex.split('').map(value=>value+value).join('');
+            if(!/^[0-9a-f]{6}$/i.test(hex)) hex='ffffff';
+            const values=[0,2,4].map(index=>parseInt(hex.slice(index,index+2),16)/255);
+            return `${values[0].toFixed(5)} ${values[1].toFixed(5)} ${values[2].toFixed(5)} 1`;
+        }
+
+        function createDaeMeshBuilder() {
+            const positions=[];
+            const materialGroups=new Map();
+            const materials=new Map();
+            const safePoint=point=>({
+                x:Number.isFinite(Number(point?.x))?Number(point.x):0,
+                y:Number.isFinite(Number(point?.y))?Number(point.y):0,
+                z:Number.isFinite(Number(point?.z))?Number(point.z):0
+            });
+            const vectorLength=value=>Math.hypot(value.x,value.y,value.z);
+            const normalize=value=>{
+                const length=vectorLength(value)||1;
+                return {x:value.x/length,y:value.y/length,z:value.z/length};
+            };
+            const cross=(a,b)=>({x:a.y*b.z-a.z*b.y,y:a.z*b.x-a.x*b.z,z:a.x*b.y-a.y*b.x});
+            const materialId=color=>{
+                const normalized=/^#[0-9a-f]{6}$/i.test(String(color||''))?String(color).toLowerCase():'#ffffff';
+                if(!materials.has(normalized)) materials.set(normalized,{id:`mat_${normalized.slice(1)}`,color:normalized});
+                return materials.get(normalized).id;
+            };
+            const addVertex=point=>{
+                const value=safePoint(point),index=positions.length/3;
+                positions.push(value.x,value.y,value.z);
+                return index;
+            };
+            const addIndices=(id,indices)=>{
+                if(!materialGroups.has(id)) materialGroups.set(id,[]);
+                materialGroups.get(id).push(...indices);
+            };
+
+            function addTubePath(rawPoints,radius,color,sides=3) {
+                const points=(rawPoints||[]).map(safePoint),tubeRadius=Math.max(.08,Number(radius)||.3);
+                if(points.length<2) return;
+                const matId=materialId(color);
+                for(let index=0;index<points.length-1;index++) {
+                    const start=points[index],end=points[index+1];
+                    const direction={x:end.x-start.x,y:end.y-start.y,z:end.z-start.z};
+                    if(vectorLength(direction)<.0001) continue;
+                    const unit=normalize(direction);
+                    const reference=Math.abs(unit.z)<.9?{x:0,y:0,z:1}:{x:0,y:1,z:0};
+                    const axisU=normalize(cross(unit,reference));
+                    const axisV=normalize(cross(unit,axisU));
+                    const startRing=[],endRing=[];
+                    for(let side=0;side<sides;side++) {
+                        const angle=Math.PI*2*side/sides;
+                        const offset={
+                            x:(axisU.x*Math.cos(angle)+axisV.x*Math.sin(angle))*tubeRadius,
+                            y:(axisU.y*Math.cos(angle)+axisV.y*Math.sin(angle))*tubeRadius,
+                            z:(axisU.z*Math.cos(angle)+axisV.z*Math.sin(angle))*tubeRadius
+                        };
+                        startRing.push(addVertex({x:start.x+offset.x,y:start.y+offset.y,z:start.z+offset.z}));
+                        endRing.push(addVertex({x:end.x+offset.x,y:end.y+offset.y,z:end.z+offset.z}));
+                    }
+                    for(let side=0;side<sides;side++) {
+                        const next=(side+1)%sides;
+                        addIndices(matId,[startRing[side],endRing[side],startRing[next],startRing[next],endRing[side],endRing[next]]);
+                    }
+                }
+            }
+
+            function addOctahedron(center,radius,color) {
+                const point=safePoint(center),r=Math.max(.1,Number(radius)||1),matId=materialId(color);
+                const vertices=[
+                    {x:point.x+r,y:point.y,z:point.z},{x:point.x-r,y:point.y,z:point.z},
+                    {x:point.x,y:point.y+r,z:point.z},{x:point.x,y:point.y-r,z:point.z},
+                    {x:point.x,y:point.y,z:point.z+r},{x:point.x,y:point.y,z:point.z-r}
+                ].map(addVertex);
+                const [xp,xm,yp,ym,zp,zm]=vertices;
+                addIndices(matId,[xp,yp,zp,yp,xm,zp,xm,ym,zp,ym,xp,zp,yp,xp,zm,xm,yp,zm,ym,xm,zm,xp,ym,zm]);
+            }
+
+            function build(modelName,metadata={}) {
+                const geometryId='firework_geometry',verticesId=`${geometryId}_vertices`,positionsId=`${geometryId}_positions`;
+                const materialsList=[...materials.values()];
+                const effects=materialsList.map(material=>`<effect id="${material.id}_effect"><profile_COMMON><technique sid="common"><constant><emission><color>${daeColorRgba(material.color)}</color></emission><transparent opaque="A_ONE"><color>1 1 1 1</color></transparent><transparency><float>1</float></transparency></constant></technique></profile_COMMON><extra><technique profile="GOOGLEEARTH"><double_sided>1</double_sided></technique></extra></effect>`).join('');
+                const materialLibrary=materialsList.map(material=>`<material id="${material.id}" name="${material.id}"><instance_effect url="#${material.id}_effect"/></material>`).join('');
+                const triangleMarkup=[...materialGroups.entries()].map(([id,indices])=>`<triangles material="${id}" count="${indices.length/3}"><input semantic="VERTEX" source="#${verticesId}" offset="0"/><p>${indices.join(' ')}</p></triangles>`).join('');
+                const bindings=materialsList.map(material=>`<instance_material symbol="${material.id}" target="#${material.id}"/>`).join('');
+                const created=new Date().toISOString();
+                const customMetadata=Object.entries(metadata).map(([key,value])=>`<fw:${key}>${escapeMarkup(value)}</fw:${key}>`).join('');
+                const triangleCount=[...materialGroups.values()].reduce((sum,indices)=>sum+indices.length/3,0);
+                const xml=`<?xml version="1.0" encoding="UTF-8"?><COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" xmlns:fw="https://openai.com/fireworks-simulator/1.0" version="1.4.1"><asset><contributor><authoring_tool>花火＆撮影シミュレーター v${VERSION}</authoring_tool></contributor><created>${created}</created><modified>${created}</modified><unit name="meter" meter="1"/><up_axis>Z_UP</up_axis></asset><library_effects>${effects}</library_effects><library_materials>${materialLibrary}</library_materials><library_geometries><geometry id="${geometryId}" name="${escapeMarkup(modelName)}"><mesh><source id="${positionsId}"><float_array id="${positionsId}_array" count="${positions.length}">${positions.map(value=>Number(value).toFixed(5)).join(' ')}</float_array><technique_common><accessor source="#${positionsId}_array" count="${positions.length/3}" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source><vertices id="${verticesId}"><input semantic="POSITION" source="#${positionsId}"/></vertices>${triangleMarkup}</mesh></geometry></library_geometries><library_visual_scenes><visual_scene id="firework_scene" name="${escapeMarkup(modelName)}"><node id="firework_node" name="${escapeMarkup(modelName)}"><instance_geometry url="#${geometryId}"><bind_material><technique_common>${bindings}</technique_common></bind_material></instance_geometry></node></visual_scene></library_visual_scenes><scene><instance_visual_scene url="#firework_scene"/></scene><extra><technique profile="FIREWORKS_SIMULATOR">${customMetadata}<fw:triangle_count>${triangleCount}</fw:triangle_count></technique></extra></COLLADA>`;
+                return {xml,triangleCount,vertexCount:positions.length/3,materialCount:materialsList.length};
+            }
+
+            return {addTubePath,addOctahedron,build};
+        }
+
+        function buildFireworkDae(item,metadata) {
+            const builder=createDaeMeshBuilder();
+            const pattern=normalizeFireworkPattern(item.pattern);
+            const size=parseFloat(item.size)||4;
+            const burstRadius=getFireworkRadius(size);
+            const altitude=getStoredAltitude(item);
+            const xOffset=parseFloat(item.xOffset)||0;
+            const lineWidth=clampLineWidth(item.lineWidth);
+            const trailRadius=Math.max(.25,Math.min(3.2,.35+lineWidth*.18));
+            const trajectoryRadius=Math.max(.22,Math.min(1.5,.22+lineWidth*.11));
+            const localPoint=point=>({x:xOffset+point.x,y:point.y,z:altitude+point.z});
+
+            // 専用KMZでは、花火設定の表示ON/OFFに関係なく打上げ線を含める。
+            if(pattern!=='fan') {
+                const trajectory=Array.from({length:33},(_,index)=>{
+                    const t=index/32;
+                    return {x:xOffset*t,y:0,z:altitude*(2*t-t*t)};
+                });
+                builder.addTubePath(trajectory,trajectoryRadius,'#ffffff');
+            }
+
+            if(pattern==='fan') {
+                const palette=getFireworkCssPalette(item.color);
+                getFanTrailGeometry(item.fanLength,item.fanSpread,13,10).forEach(trail=>{
+                    const points=trail.points.map(point=>({x:xOffset+point.x,y:point.y,z:Math.max(0,point.z)}));
+                    builder.addTubePath(points,trailRadius,palette[trail.colorIndex%palette.length]);
+                });
+            } else if(pattern==='senshoku-senrin'&&fireworkRealMode) {
+                const palette=getFireworkCssPalette(item.color);
+                const geometry=getSenrinTrailGeometry(burstRadius,12,12,8);
+                geometry.trails.forEach(trail=>builder.addTubePath(trail.points.map(localPoint),trailRadius,palette[trail.colorIndex%palette.length]));
+                geometry.clusters.forEach((cluster,index)=>builder.addOctahedron(localPoint(cluster),Math.max(.7,trailRadius*1.45),palette[index%palette.length]));
+            } else if(pattern==='senshoku-senrin') {
+                const palette=getFireworkCssPalette(item.color);
+                getSenrinChildren(burstRadius,16).forEach(child=>{
+                    const color=palette[child.colorIndex%palette.length];
+                    for(let phi=0;phi<180;phi+=60) {
+                        const phiRad=phi*Math.PI/180,points=[];
+                        for(let angle=0;angle<=360;angle+=20) {
+                            const radians=angle*Math.PI/180;
+                            points.push({
+                                x:xOffset+child.x+child.radius*Math.sin(radians)*Math.cos(phiRad),
+                                y:child.y+child.radius*Math.sin(radians)*Math.sin(phiRad),
+                                z:altitude+child.z+child.radius*Math.cos(radians)
+                            });
+                        }
+                        builder.addTubePath(points,trailRadius,color);
+                    }
+                    builder.addOctahedron({x:xOffset+child.x,y:child.y,z:altitude+child.z},Math.max(.7,trailRadius*1.45),color);
+                });
+            } else if(fireworkRealMode) {
+                const palettes=getStarmineCssPalettes(item.color);
+                getStarmineTrailGeometry(burstRadius,72,9,item.starmineLength).forEach(trail=>{
+                    const points=trail.points.map(localPoint);
+                    const split=Math.max(2,Math.floor((points.length-1)*.7));
+                    builder.addTubePath(points.slice(0,split+1),trailRadius*.78,palettes.base[trail.baseColorIndex%palettes.base.length]);
+                    builder.addTubePath(points.slice(split),trailRadius,palettes.tip[trail.tipColorIndex%palettes.tip.length]);
+                });
+                builder.addOctahedron({x:xOffset,y:0,z:altitude},Math.max(1.2,trailRadius*2.2),'#fff8cf');
+            } else {
+                const color=getFireworkCssColor(item.color);
+                for(let phi=0;phi<180;phi+=30) {
+                    const phiRad=phi*Math.PI/180,points=[];
+                    for(let angle=0;angle<=360;angle+=10) {
+                        const radians=angle*Math.PI/180;
+                        points.push({x:xOffset+burstRadius*Math.sin(radians)*Math.cos(phiRad),y:burstRadius*Math.sin(radians)*Math.sin(phiRad),z:altitude+burstRadius*Math.cos(radians)});
+                    }
+                    builder.addTubePath(points,trailRadius,color);
+                }
+                builder.addOctahedron({x:xOffset,y:0,z:altitude},Math.max(1.2,trailRadius*2.2),'#fff8cf');
+            }
+
+            return builder.build(metadata.modelName,{
+                application_version:VERSION,
+                event_name:metadata.eventName,
+                launch_site:metadata.siteName,
+                firework_index:metadata.fireworkIndex,
+                firework_type:getFireworkPatternLabel(pattern),
+                launch_latitude:Number(metadata.launchLat).toFixed(8),
+                launch_longitude:Number(metadata.launchLon).toFixed(8),
+                launch_ground_elevation_m:Number(metadata.launchElevation).toFixed(2),
+                launch_heading_deg:Number(metadata.siteAngle).toFixed(2),
+                firework_latitude:Number(metadata.fireworkLat).toFixed(8),
+                firework_longitude:Number(metadata.fireworkLon).toFixed(8),
+                firework_center_elevation_m:Number(metadata.fireworkElevation).toFixed(2),
+                local_x_offset_m:Number(xOffset).toFixed(2),
+                local_center_height_m:Number(altitude).toFixed(2)
+            });
         }
 
         function normalizeLaunchAngle(value) {
@@ -3360,8 +3552,14 @@
             return `<Folder><name>赤枠（疑似表示）</name><open>0</open><description>花火の方向へカメラを真正面に向けたときだけ使用する補助枠です。本来の画角枠と同じ大きさに見えるよう、カメラ直前へ比例縮小して配置しています。枠の下側が地面に埋まらないよう、必要に応じてさらに手前へ寄せています（見かけの大きさは変わりません）。</description><Placemark><name>赤枠の白い縁取り</name><styleUrl>#sFovFrontHalo</styleUrl>${line}</Placemark><Placemark><name>赤枠（疑似表示）の枠線</name><styleUrl>#sFovFront</styleUrl>${line}</Placemark></Folder>`;
         }
 
-        // isTour 引数を追加
-        async function generateKML(isTour = true) {
+        // 花火・打上げ線・配置座標だけを、doc.kml入りのKMZとして書き出す。
+        // カメラ、撮影画角、距離線、ツアーは含めない。
+        async function generateFireworksOnlyKMZ() {
+            return generateKML(false, true);
+        }
+
+        // fireworksOnlyKmz=true のときは花火専用KMZを生成する。
+        async function generateKML(isTour = true, fireworksOnlyKmz = false) {
             if(!fireworkMarker) return alert("打上場所を選択してください");
             if(getAllLaunchSites().some(site => !getSiteGroupConfiguration(site).fireworks.length)) return alert("花火が入っていない筒場があります。「2. 花火を作る」でその筒場を選び、花火を追加してください");
             const fw = fireworkMarker.getLatLng(), target = getLaunchCenter(), cm = cameraMarker ? cameraMarker.getLatLng() : null;
@@ -3523,16 +3721,22 @@
                 // 【変更 v3.4.8】スターマインの打上げ線は常に白で固定（リアルモードでも金色にしない）。
                 // 表示するかどうかは花火ごとのチェック（扇形は地面から立ち上がるので線そのものが無い）。
                 const trajectoryStyleId = pattern==='starmine' ? 'sTrajectory' : (fireworkRealMode ? 'sTrajectoryReal' : 'sTrajectory');
-                const drawTrajectory = pattern!=='fan' && item.showTrajectory!==false;
+                // 花火専用KMZでは、扇形以外の打上げ線を必ず収録する。
+                // 通常KMLは従来どおり花火ごとの表示設定に従う。
+                const drawTrajectory = pattern!=='fan' && (fireworksOnlyKmz || item.showTrajectory!==false);
                 const colorLabel = getFireworkColorLabel(colorKey);
                 const itemLabel = pattern==='fan'
                     ? `扇形花火 ${normalizeFanLength(item.fanLength)}m・広がり${normalizeFanSpread(item.fanSpread)}°・${colorLabel}`
                     : `${getFireworkPatternLabel(item.pattern)} ${item.size}号・${colorLabel}${fireworkRealMode?`（リアル${pattern==='starmine'&&normalizeStarmineLength(item.starmineLength)>100?`・長さ${normalizeStarmineLength(item.starmineLength)}%`:''}）`:''}`;
                 const trajectoryKml = drawTrajectory ? `<Placemark><name>打上軌道</name><styleUrl>#${trajectoryStyleId}</styleUrl><LineString><altitudeMode>absolute</altitudeMode><tessellate>0</tessellate><coordinates>${trajectory}</coordinates></LineString></Placemark>` : '';
-                return `<Folder><name>${index + 1}. ${itemLabel}</name>${trajectoryKml}${burst}</Folder>`;
+                const itemMetadataKml = fireworksOnlyKmz
+                    ? `<description>${pattern==='fan'?'扇形花火の設置基準':'花火の開花中心'}：緯度 ${centerLat.toFixed(8)}、経度 ${centerLon.toFixed(8)}、${pattern==='fan'?'地上標高':'絶対標高'} ${pattern==='fan'?originElev.toFixed(2):(originElev+altitude).toFixed(2)}m</description><ExtendedData><Data name="firework_type"><value>${escapeMarkup(getFireworkPatternLabel(pattern))}</value></Data><Data name="latitude"><value>${centerLat.toFixed(8)}</value></Data><Data name="longitude"><value>${centerLon.toFixed(8)}</value></Data><Data name="launch_ground_elevation_m"><value>${originElev.toFixed(2)}</value></Data><Data name="firework_center_elevation_m"><value>${pattern==='fan'?originElev.toFixed(2):(originElev+altitude).toFixed(2)}</value></Data><Data name="height_above_launch_ground_m"><value>${pattern==='fan'?normalizeFanLength(item.fanLength).toFixed(2):Number(altitude).toFixed(2)}</value></Data></ExtendedData>`
+                    : '';
+                return `<Folder><name>${index + 1}. ${itemLabel}</name>${itemMetadataKml}${trajectoryKml}${burst}</Folder>`;
             };
 
             const siteFolders = [];
+            const daeModels = [];
             const launchSites = getAllLaunchSites();
             for (let siteIndex=0; siteIndex<launchSites.length; siteIndex++) {
                 const site = launchSites[siteIndex];
@@ -3540,11 +3744,63 @@
                 const originElev = await getElevation(origin.lat, origin.lng) + fwOffset;
                 launchElevationSum += originElev;
                 const config = getSiteGroupConfiguration(site);
-                const bursts = config.fireworks.map((item,index) => buildBurstKml(item,index,origin,originElev,config.angle)).join('');
                 const siteName = `筒場${siteIndex+1}`;
-                siteFolders.push(`<Folder><name>${siteName}</name><Placemark><name>${siteName}</name><Point><altitudeMode>absolute</altitudeMode><coordinates>${origin.lng},${origin.lat},${originElev}</coordinates></Point></Placemark>${bursts}</Folder>`);
+                const bursts = config.fireworks.map((item,index) => buildBurstKml(item,index,origin,originElev,config.angle)).join('');
+                if(fireworksOnlyKmz) {
+                    config.fireworks.forEach((item,itemIndex)=>{
+                        const modelName=`${siteName} 花火${itemIndex+1} ${getFireworkPatternLabel(item.pattern)}`;
+                        const modelPath=`models/launch_${String(siteIndex+1).padStart(2,'0')}_firework_${String(itemIndex+1).padStart(3,'0')}.dae`;
+                        const fireworkPosition=getGroupOffsetLatLng(origin,parseFloat(item.xOffset)||0,config.angle);
+                        const isFan=normalizeFireworkPattern(item.pattern)==='fan';
+                        const centerElevation=originElev+(isFan?0:getStoredAltitude(item));
+                        const dae=buildFireworkDae(item,{
+                            modelName,eventName,siteName,fireworkIndex:itemIndex+1,
+                            launchLat:origin.lat,launchLon:origin.lng,launchElevation:originElev,siteAngle:config.angle,
+                            fireworkLat:fireworkPosition.lat,fireworkLon:fireworkPosition.lng,fireworkElevation:centerElevation
+                        });
+                        const heading=((Number(config.angle)||0)%360+360)%360;
+                        const modelKml=`<Placemark><name>${escapeMarkup(modelName)}</name><description>COLLADA 3Dモデル：${escapeMarkup(modelPath)}。花火中心の緯度 ${fireworkPosition.lat.toFixed(8)}、経度 ${fireworkPosition.lng.toFixed(8)}、${isFan?'設置基準':'絶対'}標高 ${centerElevation.toFixed(2)}m</description><ExtendedData><Data name="model_file"><value>${modelPath}</value></Data><Data name="firework_type"><value>${escapeMarkup(getFireworkPatternLabel(item.pattern))}</value></Data><Data name="latitude"><value>${fireworkPosition.lat.toFixed(8)}</value></Data><Data name="longitude"><value>${fireworkPosition.lng.toFixed(8)}</value></Data><Data name="launch_ground_elevation_m"><value>${originElev.toFixed(2)}</value></Data><Data name="firework_center_elevation_m"><value>${centerElevation.toFixed(2)}</value></Data><Data name="triangle_count"><value>${dae.triangleCount}</value></Data><Data name="vertex_count"><value>${dae.vertexCount}</value></Data></ExtendedData><Model><altitudeMode>absolute</altitudeMode><Location><longitude>${origin.lng}</longitude><latitude>${origin.lat}</latitude><altitude>${originElev}</altitude></Location><Orientation><heading>${heading}</heading><tilt>0</tilt><roll>0</roll></Orientation><Scale><x>1</x><y>1</y><z>1</z></Scale><Link><href>${modelPath}</href></Link></Model></Placemark>`;
+                        daeModels.push({path:modelPath,xml:dae.xml,kml:modelKml,triangleCount:dae.triangleCount,vertexCount:dae.vertexCount});
+                    });
+                }
+                const siteMetadataKml = fireworksOnlyKmz
+                    ? `<description>緯度 ${origin.lat.toFixed(8)}、経度 ${origin.lng.toFixed(8)}、地上標高 ${originElev.toFixed(2)}m</description><ExtendedData><Data name="latitude"><value>${origin.lat.toFixed(8)}</value></Data><Data name="longitude"><value>${origin.lng.toFixed(8)}</value></Data><Data name="ground_elevation_m"><value>${originElev.toFixed(2)}</value></Data><Data name="launch_angle_deg"><value>${Number(config.angle).toFixed(2)}</value></Data></ExtendedData>`
+                    : '';
+                const sitePointKml = fireworksOnlyKmz
+                    ? ''
+                    : `<Placemark><name>${siteName}</name><Point><altitudeMode>absolute</altitudeMode><coordinates>${origin.lng},${origin.lat},${originElev}</coordinates></Point></Placemark>`;
+                siteFolders.push(`<Folder><name>${siteName}</name>${siteMetadataKml}${sitePointKml}${bursts}</Folder>`);
             }
-            fireworkKml = `<Folder><name>${eventName} 筒場別花火</name>${siteFolders.join('')}</Folder>`;
+            fireworkKml = `<Folder><name>${escapeMarkup(eventName)} 筒場別花火</name>${siteFolders.join('')}</Folder>`;
+
+            if (fireworksOnlyKmz) {
+                if (typeof JSZip === 'undefined') {
+                    alert('KMZ作成機能を読み込めませんでした。インターネット接続を確認して、ページを再読み込みしてください。');
+                    return;
+                }
+                const totalFireworkCount=launchSites.reduce((sum,site)=>sum+getSiteGroupConfiguration(site).fireworks.length,0);
+                const totalTriangleCount=daeModels.reduce((sum,model)=>sum+model.triangleCount,0);
+                const metadata = `<ExtendedData><Data name="application"><value>花火＆撮影シミュレーター</value></Data><Data name="version"><value>${VERSION}</value></Data><Data name="event_name"><value>${escapeMarkup(eventName)}</value></Data><Data name="launch_site_count"><value>${launchSites.length}</value></Data><Data name="firework_count"><value>${totalFireworkCount}</value></Data><Data name="dae_model_count"><value>${daeModels.length}</value></Data><Data name="dae_triangle_count"><value>${totalTriangleCount}</value></Data></ExtendedData>`;
+                const daeFolderKml=`<Folder><name>COLLADA 3D花火モデル</name><visibility>1</visibility>${daeModels.map(model=>model.kml).join('')}</Folder>`;
+                const fallbackFolderKml=`<Folder><name>互換用KML線（初期状態OFF）</name><visibility>0</visibility><description>COLLADAモデルを表示できない環境で使用する従来形式の花火線です。</description>${fireworkKml}</Folder>`;
+                const kmzKml = `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${escapeMarkup(eventName)} 花火3Dモデル</name><description>花火と打上げ線のCOLLADA（.dae）3Dモデル、筒場および花火中心の緯度・経度・標高情報を収録しています。</description>${metadata}${fireworkStyles}<Style id="sTrajectory"><LineStyle><color>ffffffff</color><width>2</width></LineStyle></Style><Style id="sTrajectoryReal"><LineStyle><color>ff33bbff</color><width>3</width></LineStyle></Style>${daeFolderKml}${fallbackFolderKml}</Document></kml>`;
+                const zip = new JSZip();
+                zip.file('doc.kml', kmzKml);
+                daeModels.forEach(model=>zip.file(model.path,model.xml));
+                const blob = await zip.generateAsync({
+                    type:'blob',
+                    mimeType:'application/vnd.google-earth.kmz',
+                    compression:'DEFLATE',
+                    compressionOptions:{level:6}
+                });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `${eventName}（花火3Dモデル）.kmz`;
+                link.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                return;
+            }
             const launchCenterElev = launchSites.length ? launchElevationSum / launchSites.length : fwElev;
             // 【変更 v3.4.9】赤枠（疑似表示）はチェックしたときだけ出す
             // 【修正 v3.5.1】カメラと同じ高さの基準で置く。疑似枠はカメラの数m前にあるため、
