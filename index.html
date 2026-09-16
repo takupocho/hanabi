@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>花火＆撮影シミュレーター (Ver 3.5.5)</title>
+    <title>花火＆撮影シミュレーター (Ver 3.5.6)</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -210,7 +210,7 @@
     </style>
 </head>
 <body>
-    <h1>花火＆撮影シミュレーター (Ver 3.5.5)</h1>
+    <h1>花火＆撮影シミュレーター (Ver 3.5.6)</h1>
     <div class="main-row">
         <div id="map"></div>
         <div id="launchRotationPanel">
@@ -254,7 +254,7 @@
             <label id="dlgRealModeLabel" class="fw-real"><input type="checkbox" id="dlgRealMode" onchange="updateDialogRealModeText()"><span id="dlgRealModeText">リアルモード：OFF</span></label>
             <div class="fw-note">※リアルモードはすべての花火に共通の設定です</div>
             <label id="dlgTrajectoryLabel" class="fw-real"><input type="checkbox" id="dlgTrajectory" checked><span>打上げ線を表示する</span></label>
-            <label class="fw-field">花火の種類<select id="dlgPattern" onchange="updateFireworkDialogFields()"><option value="starmine">スターマイン</option><option value="senshoku-senrin">彩色千輪</option><option value="fan">扇形花火（扇打ち）</option></select></label>
+            <label class="fw-field">花火の種類<select id="dlgPattern" onchange="updateFireworkDialogFields()"><option value="starmine">スターマイン</option><option value="starmine2">スターマイン2（菊）</option><option value="senshoku-senrin">彩色千輪</option><option value="fan">扇形花火（扇打ち）</option></select></label>
             <label class="fw-field" id="dlgSizeRow">花火の号数<select id="dlgSize"></select></label>
             <label class="fw-field" id="dlgColorRow"><span id="dlgColorTitle">花火の色</span><select id="dlgColor"></select></label>
             <div class="fw-note" id="dlgColorHelp"></div>
@@ -437,7 +437,7 @@
     </div>
 
     <script>
-        const VERSION = "3.5.5";
+        const VERSION = "3.5.6";
         const map = L.map('map', { center: [34.87438, 134.69885], zoom: 13 });
         const standardLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
         const aerialLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/{y}.jpg');
@@ -539,6 +539,21 @@
             const shape=getStarmineShape(lengthPercent);
             return {up:radius*shape.lengthScale, down:radius*(shape.lengthScale+0.135*shape.droopScale)};
         }
+
+        // ===== スターマイン2（菊型）v3.5.6 =====
+        // 実物の10号玉のように、中心から真っすぐ均一に開いて輪郭が真円になる形。
+        // 100%＝光跡の先端がちょうど開花半径に届く丸い形。上げるほど伸びて下へ垂れる。
+        function getStarmine2Shape(lengthPercent){
+            const factor=normalizeStarmineLength(lengthPercent)/100;
+            return {lengthScale:1+(factor-1)*0.5, droopScale:1+(factor-1)*4};
+        }
+        function getStarmine2Extent(size,lengthPercent){
+            const radius=getFireworkRadius(size);
+            const shape=getStarmine2Shape(lengthPercent);
+            return {up:radius*shape.lengthScale, down:radius*(shape.lengthScale+0.05*shape.droopScale)};
+        }
+        // 内側は銀白色で光り、外側だけが選んだ色になる（写真の10号玉と同じ配色）
+        const starmine2InnerCss='#eef3ff', starmine2InnerKml='fffff3ee';
 
         let fireworkRealMode = localStorage.getItem('fireworkRealMode') === 'true';
         // 【変更 v3.4】単発/複数の区別は廃止。花火は必ず「筒場ごとの配列」で持つ。
@@ -1013,6 +1028,8 @@
                 parts.push(getFanSvgMarkup(fwX, fwGroundY, representative.fanLength * scaleY, representative.fanSpread, representative.lineWidth, 13, representative.color));
             } else if(representative.pattern==='senshoku-senrin') {
                 parts.push(fireworkRealMode?getSenrinSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,12,40,representative.color):getSenrinWireframeSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,12,representative.color));
+            } else if(fireworkRealMode && representative.pattern==='starmine2') {
+                parts.push(getStarmine2SvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,200,representative.color,representative.starmineLength));
             } else if(fireworkRealMode) {
                 parts.push(getStarmineSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,54,representative.color,representative.starmineLength));
             } else for (let i = 0; i < rayCount; i++) {
@@ -1139,12 +1156,12 @@
         const senrinCssColors=['#ff3b30','#ff9f0a','#30d158','#0a84ff','#bf5af2','#ffffff'];
 
         function normalizeFireworkPattern(value) {
-            return value==='senshoku-senrin'?'senshoku-senrin':value==='fan'?'fan':'starmine';
+            return value==='senshoku-senrin'?'senshoku-senrin':value==='fan'?'fan':value==='starmine2'?'starmine2':'starmine';
         }
 
         function getFireworkPatternLabel(value) {
             const pattern=normalizeFireworkPattern(value);
-            return pattern==='senshoku-senrin'?'彩色千輪':pattern==='fan'?'扇形花火':'スターマイン';
+            return pattern==='senshoku-senrin'?'彩色千輪':pattern==='fan'?'扇形花火':pattern==='starmine2'?'スターマイン2':'スターマイン';
         }
 
         // ===== 扇形花火（扇打ち）：地上から扇状に打ち上げる光跡（v3.3.27から移植） =====
@@ -1194,6 +1211,10 @@
             // リアルモードのスターマインは光跡が下へ垂れるので、その分だけ下端を広げる
             if (pattern === 'starmine' && fireworkRealMode) {
                 const extent = getStarmineExtent(size, item?.starmineLength);
+                return {bottom:center - extent.down, top:center + extent.up};
+            }
+            if (pattern === 'starmine2' && fireworkRealMode) {
+                const extent = getStarmine2Extent(size, item?.starmineLength);
                 return {bottom:center - extent.down, top:center + extent.up};
             }
             const radius = getFireworkRadius(size);
@@ -1288,6 +1309,54 @@
                 trails.push({baseColorIndex:index%3,tipColorIndex:tipCycle[index%tipCycle.length],points});
             }
             return trails;
+        }
+
+        // ===== スターマイン2（菊型）の光跡 =====
+        // 全方向へ均等（黄金角）に、ほぼ同じ長さで真っすぐ伸ばす。長さをそろえるので輪郭が真円になる。
+        // 先端はわずかに重力で垂れる。色は内側45%が銀白、外側が選んだ色。
+        function getStarmine2Palettes(colorKey){
+            const option=fireworkColorOptions[normalizeFireworkColorKey(colorKey)];
+            return {
+                innerCss:starmine2InnerCss, innerKml:starmine2InnerKml,
+                outerCss:option.css?[option.css]:senrinCssColors,
+                outerKml:option.kml?[option.kml]:senrinKmlColors
+            };
+        }
+        function getStarmine2TrailGeometry(radius,trailCount=220,pointCount=10,lengthPercent=100) {
+            const shape=getStarmine2Shape(lengthPercent);
+            const goldenAngle=Math.PI*(3-Math.sqrt(5));
+            const trails=[];
+            for(let index=0;index<trailCount;index++) {
+                const vertical=1-2*(index+.5)/trailCount;
+                const horizontal=Math.sqrt(Math.max(.02,1-vertical*vertical));
+                const azimuth=index*goldenAngle;
+                const length=radius*(.95+.05*((index*13)%7)/6)*shape.lengthScale;
+                const points=[];
+                for(let pointIndex=0;pointIndex<pointCount;pointIndex++) {
+                    const t=pointIndex/(pointCount-1);
+                    const gravity=radius*.05*shape.droopScale*t*t;
+                    points.push({x:Math.cos(azimuth)*horizontal*length*t,y:Math.sin(azimuth)*horizontal*length*t,z:vertical*length*t-gravity});
+                }
+                trails.push({colorIndex:index%senrinCssColors.length,points});
+            }
+            return trails;
+        }
+        // 光跡を内側／外側に分ける位置（45%）
+        function splitStarmine2Trail(points){
+            const split=Math.max(1,Math.round((points.length-1)*.45));
+            return {inner:points.slice(0,split+1),outer:points.slice(split)};
+        }
+        function getStarmine2SvgMarkup(centerX,centerY,radius,lineWidth,trailCount=110,colorKey='mixed',lengthPercent=100) {
+            const palettes=getStarmine2Palettes(colorKey);
+            const toPath=points=>points.map((point,index)=>`${index?'L':'M'} ${(centerX+point.x).toFixed(1)} ${(centerY-point.z).toFixed(1)}`).join(' ');
+            let markup='';
+            getStarmine2TrailGeometry(radius,trailCount,8,lengthPercent).forEach(trail=>{
+                const {inner,outer}=splitStarmine2Trail(trail.points);
+                markup+=`<path d="${toPath(inner)}" fill="none" stroke="${palettes.innerCss}" stroke-opacity=".85" stroke-width="${Math.max(.8,lineWidth*.5).toFixed(1)}" stroke-linecap="round"/>`;
+                markup+=`<path d="${toPath(outer)}" fill="none" stroke="${palettes.outerCss[trail.colorIndex%palettes.outerCss.length]}" stroke-width="${Math.max(1,lineWidth*.75).toFixed(1)}" stroke-linecap="round"/>`;
+            });
+            markup+=`<circle cx="${centerX.toFixed(1)}" cy="${centerY.toFixed(1)}" r="${Math.max(3.5,lineWidth*2.2).toFixed(1)}" fill="#fffbe6" stroke="#ffe08a" stroke-width="2"/>`;
+            return markup;
         }
 
         function getStarmineSvgMarkup(centerX,centerY,radius,lineWidth,trailCount=54,colorKey='mixed',lengthPercent=100) {
@@ -1453,6 +1522,15 @@
                     }
                     builder.addOctahedron({x:xOffset+child.x,y:child.y,z:altitude+child.z},Math.max(.7,trailRadius*1.45),color);
                 });
+            } else if(pattern==='starmine2'&&fireworkRealMode) {
+                const palettes=getStarmine2Palettes(item.color);
+                getStarmine2TrailGeometry(burstRadius,110,8,item.starmineLength).forEach(trail=>{
+                    const points=trail.points.map(localPoint);
+                    const {inner,outer}=splitStarmine2Trail(points);
+                    builder.addTubePath(inner,trailRadius*.78,palettes.innerCss);
+                    builder.addTubePath(outer,trailRadius,palettes.outerCss[trail.colorIndex%palettes.outerCss.length]);
+                });
+                builder.addOctahedron({x:xOffset,y:0,z:altitude},Math.max(1.4,trailRadius*2.4),'#fffbe6');
             } else if(fireworkRealMode) {
                 const palettes=getStarmineCssPalettes(item.color);
                 getStarmineTrailGeometry(burstRadius,72,9,item.starmineLength).forEach(trail=>{
@@ -1774,7 +1852,7 @@
             // 打上げ線は玉が上がるもの（スターマイン・彩色千輪）だけの設定
             document.getElementById('dlgTrajectoryLabel').style.display = isFan ? 'none' : 'flex';
             // スターマインの長さはリアルモードの光跡にだけ効く
-            const showStarmineLength = pattern === 'starmine';
+            const showStarmineLength = pattern === 'starmine' || pattern === 'starmine2';
             document.getElementById('dlgStarmineLengthRow').style.display = showStarmineLength ? 'block' : 'none';
             document.getElementById('dlgStarmineLengthHelp').style.display = showStarmineLength ? 'block' : 'none';
             document.getElementById('dlgStarmineLengthValue').textContent = `${normalizeStarmineLength(document.getElementById('dlgStarmineLength').value)}%`;
@@ -2278,7 +2356,8 @@
                 parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${radius.toFixed(1)}" fill="${color}" fill-opacity="${fireworkRealMode||normalizeFireworkPattern(fw.pattern)==='senshoku-senrin'?'0':'.08'}" stroke="${selected?'#ffb000':color}" stroke-opacity="${fireworkRealMode?(selected?'.65':'0'):(normalizeFireworkPattern(fw.pattern)==='senshoku-senrin'?(selected?'.65':'0'):'1')}" stroke-width="${selected ? 5 : 3}"/>`);
                 if(normalizeFireworkPattern(fw.pattern)==='senshoku-senrin') {
                     parts.push(fireworkRealMode?getSenrinSvgMarkup(x,y,radius,fw.lineWidth,12,40,fw.color):getSenrinWireframeSvgMarkup(x,y,radius,fw.lineWidth,12,fw.color));
-                } else if(fireworkRealMode) parts.push(getStarmineSvgMarkup(x,y,radius,fw.lineWidth,44,fw.color,fw.starmineLength)); else [-0.65, 0, 0.65].forEach(v => parts.push(`<ellipse cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" rx="${Math.max(3, radius * Math.sqrt(1-v*v)).toFixed(1)}" ry="${radius.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${Math.max(1.5, fw.lineWidth * .7)}"/>`));
+                } else if(fireworkRealMode && normalizeFireworkPattern(fw.pattern)==='starmine2') parts.push(getStarmine2SvgMarkup(x,y,radius,fw.lineWidth,180,fw.color,fw.starmineLength));
+                else if(fireworkRealMode) parts.push(getStarmineSvgMarkup(x,y,radius,fw.lineWidth,44,fw.color,fw.starmineLength)); else [-0.65, 0, 0.65].forEach(v => parts.push(`<ellipse cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" rx="${Math.max(3, radius * Math.sqrt(1-v*v)).toFixed(1)}" ry="${radius.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${Math.max(1.5, fw.lineWidth * .7)}"/>`));
                 parts.push(getFireworkBadgeMarkup(x, y - radius - 20, index, color, selected));
                 parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#fff" stroke="#252333" stroke-width="1"/></g>`);
             });
@@ -3458,7 +3537,7 @@
                 if(b.showTrajectory!==false) parts.push(`<path d="M ${sx.toFixed(1)} ${sy.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}" fill="none" stroke="#fff" stroke-width="2" opacity="${opacity.toFixed(2)}"/>`);
                 const r=Math.max(3,b.radius*scale);
                 parts.push(`<g opacity="${opacity.toFixed(2)}"><circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="${r.toFixed(1)}" fill="${b.color}" fill-opacity="${fireworkRealMode||b.pattern==='senshoku-senrin'?'0':'.08'}" stroke="${b.color}" stroke-opacity="${fireworkRealMode||b.pattern==='senshoku-senrin'?'0':'1'}" stroke-width="${Math.max(1,b.lineWidth).toFixed(1)}"/>`);
-                if(b.pattern==='senshoku-senrin') parts.push(fireworkRealMode?getSenrinSvgMarkup(ex,ey,r,b.lineWidth,12,40,b.colorKey):getSenrinWireframeSvgMarkup(ex,ey,r,b.lineWidth,12,b.colorKey)); else if(fireworkRealMode) parts.push(getStarmineSvgMarkup(ex,ey,r,b.lineWidth,44,b.colorKey,b.starmineLength)); else [0.38,0.7].forEach(v=>parts.push(`<ellipse cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" rx="${(r*v).toFixed(1)}" ry="${r.toFixed(1)}" fill="none" stroke="${b.color}" stroke-width="${Math.max(1,b.lineWidth*.65).toFixed(1)}"/>`));
+                if(b.pattern==='senshoku-senrin') parts.push(fireworkRealMode?getSenrinSvgMarkup(ex,ey,r,b.lineWidth,12,40,b.colorKey):getSenrinWireframeSvgMarkup(ex,ey,r,b.lineWidth,12,b.colorKey)); else if(fireworkRealMode&&b.pattern==='starmine2') parts.push(getStarmine2SvgMarkup(ex,ey,r,b.lineWidth,180,b.colorKey,b.starmineLength)); else if(fireworkRealMode) parts.push(getStarmineSvgMarkup(ex,ey,r,b.lineWidth,44,b.colorKey,b.starmineLength)); else [0.38,0.7].forEach(v=>parts.push(`<ellipse cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" rx="${(r*v).toFixed(1)}" ry="${r.toFixed(1)}" fill="none" stroke="${b.color}" stroke-width="${Math.max(1,b.lineWidth*.65).toFixed(1)}"/>`));
                 parts.push(`<text x="${ex.toFixed(1)}" y="${(ey-r-5).toFixed(1)}" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">${getFireworkPatternLabel(b.pattern)} ${b.size}号</text></g>`);
             });
             tubes.forEach(t=>{
@@ -3637,6 +3716,13 @@
                 const realStylePrefix=`${styleId}Real`;
                 const colorKey=getFireworkColorKey(item);
                 const realPalettes=getStarmineKmlPalettes(colorKey);
+                const s2StylePrefix=`${styleId}S2`;
+                const s2Palettes=getStarmine2Palettes(colorKey);
+                if(pattern==='starmine2'&&fireworkRealMode) {
+                    fireworkStyles+=`<Style id="${s2StylePrefix}InnerGlow"><LineStyle><color>44${s2Palettes.innerKml.slice(2)}</color><width>${Math.max(2,senrinLineWidth*2.2)}</width></LineStyle></Style><Style id="${s2StylePrefix}Inner"><LineStyle><color>${s2Palettes.innerKml}</color><width>${Math.max(1,senrinLineWidth*.85)}</width></LineStyle></Style>`;
+                    fireworkStyles+=s2Palettes.outerKml.map((color,colorIndex)=>`<Style id="${s2StylePrefix}OuterGlow${colorIndex}"><LineStyle><color>66${color.slice(2)}</color><width>${Math.max(2,senrinLineWidth*2.5)}</width></LineStyle></Style><Style id="${s2StylePrefix}Outer${colorIndex}"><LineStyle><color>${color}</color><width>${Math.max(1,senrinLineWidth)}</width></LineStyle></Style>`).join('');
+                    fireworkStyles+=`<Style id="${s2StylePrefix}Core"><LineStyle><color>ffe6fbff</color><width>${Math.max(3,senrinLineWidth*1.6)}</width></LineStyle></Style>`;
+                }
                 if(pattern==='starmine'&&fireworkRealMode) {
                     fireworkStyles+=realPalettes.base.map((color,colorIndex)=>`<Style id="${realStylePrefix}BaseGlow${colorIndex}"><LineStyle><color>44${color.slice(2)}</color><width>${Math.max(2,senrinLineWidth*2.2)}</width></LineStyle></Style><Style id="${realStylePrefix}Base${colorIndex}"><LineStyle><color>${color}</color><width>${Math.max(1,senrinLineWidth*.85)}</width></LineStyle></Style>`).join('');
                     fireworkStyles+=realPalettes.tip.map((color,colorIndex)=>`<Style id="${realStylePrefix}TipGlow${colorIndex}"><LineStyle><color>66${color.slice(2)}</color><width>${Math.max(2,senrinLineWidth*2.5)}</width></LineStyle></Style><Style id="${realStylePrefix}Tip${colorIndex}"><LineStyle><color>${color}</color><width>${Math.max(1,senrinLineWidth)}</width></LineStyle></Style>`).join('');
@@ -3690,6 +3776,20 @@
                             burst+=`<Placemark><name>千輪球体 ${childIndex+1}</name><styleUrl>#${senrinStylePrefix}${child.colorIndex%senrinPalette.length}</styleUrl><LineString><altitudeMode>absolute</altitudeMode><coordinates>${coords}</coordinates></LineString></Placemark>`;
                         }
                     });
+                } else if(pattern==='starmine2'&&fireworkRealMode) {
+                    // スターマイン2（菊型）：220本を全方向へ均等に。内側は銀白、外側は選んだ色。
+                    const innerLines=[],outerGroups=s2Palettes.outerKml.map(()=>[]);
+                    const toLine=points=>`<LineString><altitudeMode>absolute</altitudeMode><tessellate>0</tessellate><coordinates>${points.map(point=>`${centerLon+point.x/(111320*Math.cos(centerLat*Math.PI/180))},${centerLat+point.y/111320},${originElev+altitude+point.z}`).join(' ')}</coordinates></LineString>`;
+                    getStarmine2TrailGeometry(radius,220,10,item.starmineLength).forEach(trail=>{
+                        const {inner,outer}=splitStarmine2Trail(trail.points);
+                        innerLines.push(toLine(inner));
+                        outerGroups[trail.colorIndex%outerGroups.length].push(toLine(outer));
+                    });
+                    const innerMarkup=`<MultiGeometry>${innerLines.join('')}</MultiGeometry>`;
+                    burst+=`<Placemark><name>スターマイン2・内側の光彩</name><styleUrl>#${s2StylePrefix}InnerGlow</styleUrl>${innerMarkup}</Placemark><Placemark><name>スターマイン2・内側の光跡</name><styleUrl>#${s2StylePrefix}Inner</styleUrl>${innerMarkup}</Placemark>`;
+                    outerGroups.forEach((lines,colorIndex)=>{if(lines.length){const geometryMarkup=`<MultiGeometry>${lines.join('')}</MultiGeometry>`;burst+=`<Placemark><name>スターマイン2・外側の光彩 ${colorIndex+1}</name><styleUrl>#${s2StylePrefix}OuterGlow${colorIndex}</styleUrl>${geometryMarkup}</Placemark><Placemark><name>スターマイン2・外側の光跡 ${colorIndex+1}</name><styleUrl>#${s2StylePrefix}Outer${colorIndex}</styleUrl>${geometryMarkup}</Placemark>`;}});
+                    const core=radius*.03;
+                    burst+=`<Placemark><name>スターマイン2の発光中心</name><styleUrl>#${s2StylePrefix}Core</styleUrl><MultiGeometry><LineString><altitudeMode>absolute</altitudeMode><coordinates>${centerLon-core/(111320*Math.cos(centerLat*Math.PI/180))},${centerLat},${originElev+altitude} ${centerLon+core/(111320*Math.cos(centerLat*Math.PI/180))},${centerLat},${originElev+altitude}</coordinates></LineString><LineString><altitudeMode>absolute</altitudeMode><coordinates>${centerLon},${centerLat},${originElev+altitude-core} ${centerLon},${centerLat},${originElev+altitude+core}</coordinates></LineString></MultiGeometry></Placemark>`;
                 } else if(fireworkRealMode) {
                     const baseGroups=realPalettes.base.map(()=>[]),tipGroups=realPalettes.tip.map(()=>[]);
                     getStarmineTrailGeometry(radius,110,11,item.starmineLength).forEach(trail=>{
@@ -3720,14 +3820,14 @@
                 }
                 // 【変更 v3.4.8】スターマインの打上げ線は常に白で固定（リアルモードでも金色にしない）。
                 // 表示するかどうかは花火ごとのチェック（扇形は地面から立ち上がるので線そのものが無い）。
-                const trajectoryStyleId = pattern==='starmine' ? 'sTrajectory' : (fireworkRealMode ? 'sTrajectoryReal' : 'sTrajectory');
+                const trajectoryStyleId = (pattern==='starmine' || pattern==='starmine2') ? 'sTrajectory' : (fireworkRealMode ? 'sTrajectoryReal' : 'sTrajectory');
                 // 花火専用KMZでは、扇形以外の打上げ線を必ず収録する。
                 // 通常KMLは従来どおり花火ごとの表示設定に従う。
                 const drawTrajectory = pattern!=='fan' && (fireworksOnlyKmz || item.showTrajectory!==false);
                 const colorLabel = getFireworkColorLabel(colorKey);
                 const itemLabel = pattern==='fan'
                     ? `扇形花火 ${normalizeFanLength(item.fanLength)}m・広がり${normalizeFanSpread(item.fanSpread)}°・${colorLabel}`
-                    : `${getFireworkPatternLabel(item.pattern)} ${item.size}号・${colorLabel}${fireworkRealMode?`（リアル${pattern==='starmine'&&normalizeStarmineLength(item.starmineLength)>100?`・長さ${normalizeStarmineLength(item.starmineLength)}%`:''}）`:''}`;
+                    : `${getFireworkPatternLabel(item.pattern)} ${item.size}号・${colorLabel}${fireworkRealMode?`（リアル${(pattern==='starmine'||pattern==='starmine2')&&normalizeStarmineLength(item.starmineLength)>100?`・長さ${normalizeStarmineLength(item.starmineLength)}%`:''}）`:''}`;
                 const trajectoryKml = drawTrajectory ? `<Placemark><name>打上軌道</name><styleUrl>#${trajectoryStyleId}</styleUrl><LineString><altitudeMode>absolute</altitudeMode><tessellate>0</tessellate><coordinates>${trajectory}</coordinates></LineString></Placemark>` : '';
                 const itemMetadataKml = fireworksOnlyKmz
                     ? `<description>${pattern==='fan'?'扇形花火の設置基準':'花火の開花中心'}：緯度 ${centerLat.toFixed(8)}、経度 ${centerLon.toFixed(8)}、${pattern==='fan'?'地上標高':'絶対標高'} ${pattern==='fan'?originElev.toFixed(2):(originElev+altitude).toFixed(2)}m</description><ExtendedData><Data name="firework_type"><value>${escapeMarkup(getFireworkPatternLabel(pattern))}</value></Data><Data name="latitude"><value>${centerLat.toFixed(8)}</value></Data><Data name="longitude"><value>${centerLon.toFixed(8)}</value></Data><Data name="launch_ground_elevation_m"><value>${originElev.toFixed(2)}</value></Data><Data name="firework_center_elevation_m"><value>${pattern==='fan'?originElev.toFixed(2):(originElev+altitude).toFixed(2)}</value></Data><Data name="height_above_launch_ground_m"><value>${pattern==='fan'?normalizeFanLength(item.fanLength).toFixed(2):Number(altitude).toFixed(2)}</value></Data></ExtendedData>`
