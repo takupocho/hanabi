@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>花火＆撮影シミュレーター (Ver 3.7.3)</title>
+    <title>花火＆撮影シミュレーター (Ver 3.7.4)</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -236,7 +236,7 @@
     </style>
 </head>
 <body>
-    <h1>花火＆撮影シミュレーター (Ver 3.7.3)</h1>
+    <h1>花火＆撮影シミュレーター (Ver 3.7.4)</h1>
     <div class="main-row">
         <div id="map"></div>
         <div id="launchRotationPanel">
@@ -490,7 +490,7 @@
     </div>
 
     <script>
-        const VERSION = "3.7.3";
+        const VERSION = "3.7.4";
         const map = L.map('map', { center: [34.87438, 134.69885], zoom: 13 });
         const standardLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
         const aerialLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/{y}.jpg');
@@ -4170,7 +4170,11 @@
                 const fovA = getFrameAtDistance(f, 1).hFovDeg;
                 
                 const angle = parseFloat(document.getElementById('frameAngle').value) || 0;
-                const b = calcBearingRad(cm.lat,cm.lng,target.lat,target.lng)*180/Math.PI + angle;
+                // 【修正 v3.7.4】左右調整のぶんもカメラが振れるので、地図の撮影範囲にも反映する
+                // （KMLのカメラ向きと一致させるため）
+                const sideOffsetValue = parseFloat(document.getElementById('frameSideOffset').value) || 0;
+                const sidePanDeg = Math.atan2(sideOffsetValue, Math.max(distM, 1)) * 180 / Math.PI;
+                const b = calcBearingRad(cm.lat,cm.lng,target.lat,target.lng)*180/Math.PI + angle + sidePanDeg;
                 const pts = [cm];
                 const arcSteps = 36;
                 for(let i=0; i<=arcSteps; i++) {
@@ -4251,28 +4255,45 @@
             const zoomHFOV = getFrameAtDistance(zoomF, 1).hFovDeg;
             const distM = cm ? map.distance(target, cm) : 500;
             // 【修正】cos(緯度)補正を含む正しい大円方位角を使用（赤枠の向き計算用）
-            const azimuth = cm ? (calcBearingRad(cm.lat, cm.lng, target.lat, target.lng) + (angle * Math.PI / 180)) : 0;
             const frameAlt = getFrameCenterAltitude() + altOffset;
             const frameCenterAbsAlt = fwElev + frameAlt;
-            // 【修正 v3.5.1】枠までの距離は水平距離ではなく斜距離。見上げるぶんだけ枠は大きくなる。
-            const slantToFrame = cm ? Math.hypot(Math.max(distM,.01), frameCenterAbsAlt - cameraEyeAlt) : distM;
+            // 【修正 v3.7.4】赤枠をカメラに正対させる。
+            // 以前は「垂直な板」として置いていたため、見上げるほど遠近で上辺が狭まり台形に見えていた。
+            // 写真の縁は必ず長方形なので、光軸に対して直角な面に枠を作れば、カメラから見て
+            // 正確な長方形＝実際の写真の縁と一致する。
+            // 赤枠の角度（パン）と左右調整を注視点に反映してから、その方向に正対させる。
+            const baseBearingDeg = cm ? calcBearingRad(cm.lat, cm.lng, target.lat, target.lng) * 180 / Math.PI : 0;
+            const viewBearingDeg = baseBearingDeg + angle;
+            const aimGround = cm ? destinationLatLng(cm.lat, cm.lng, viewBearingDeg, Math.max(distM, 1)) : {lat:target.lat, lng:target.lng};
+            const aimPoint = (cm && sideOffset) ? destinationLatLng(aimGround.lat, aimGround.lng, viewBearingDeg + 90, sideOffset) : aimGround;
+            const frameCosLat = Math.cos((cm ? cm.lat : target.lat) * Math.PI / 180);
+            // カメラを原点にした東・北・上のメートル座標
+            const aimLocal = cm
+                ? {e:(aimPoint.lng - cm.lng) * 111320 * frameCosLat, n:(aimPoint.lat - cm.lat) * 111320, u:frameCenterAbsAlt - cameraEyeAlt}
+                : {e:0, n:Math.max(distM, 1), u:0};
+            const slantToFrame = Math.max(1, Math.hypot(aimLocal.e, aimLocal.n, aimLocal.u));
+            const axis = {e:aimLocal.e / slantToFrame, n:aimLocal.n / slantToFrame, u:aimLocal.u / slantToFrame};
+            // 光軸に直角な「右」と「上」（カメラは傾けないので右は水平）
+            const axisFlat = Math.max(1e-9, Math.hypot(axis.e, axis.n));
+            const frameRight = {e:axis.n / axisFlat, n:-axis.e / axisFlat, u:0};
+            const frameUp = {
+                e:frameRight.n * axis.u,
+                n:-frameRight.e * axis.u,
+                u:frameRight.e * axis.n - frameRight.n * axis.e
+            };
             const w = 2 * slantToFrame * Math.tan(hFOV * Math.PI / 360);
             const h = 2 * slantToFrame * Math.tan(frame.vFovDeg * Math.PI / 360);
-            const dx = Math.cos(azimuth) * (w / 2) / (111320 * Math.cos(target.lat * Math.PI / 180));
-            const dy = -Math.sin(azimuth) * (w / 2) / 111320;
-            // 【修正】カメラから見て「右」方向がプラスになるよう向きを反転(以前は逆＝左方向がプラスだった)
-            const sideAngle = azimuth + Math.PI / 2;
-            const sDx = Math.sin(sideAngle) * sideOffset / (111320 * Math.cos(target.lat * Math.PI / 180));
-            const sDy = Math.cos(sideAngle) * sideOffset / 111320;
-            const frameVertical = cm
-                ? getFrameVerticalRange(cameraEyeAlt, distM, frameCenterAbsAlt, frame.vFovDeg)
-                : {top:frameCenterAbsAlt + h / 2, bottom:frameCenterAbsAlt - h / 2};
-            const fovCorners = [
-                {lng:target.lng+dx+sDx,lat:target.lat+dy+sDy,alt:frameVertical.top},
-                {lng:target.lng-dx+sDx,lat:target.lat-dy+sDy,alt:frameVertical.top},
-                {lng:target.lng-dx+sDx,lat:target.lat-dy+sDy,alt:frameVertical.bottom},
-                {lng:target.lng+dx+sDx,lat:target.lat+dy+sDy,alt:frameVertical.bottom}
-            ];
+            const frameCorner = (sideSign, upSign) => {
+                const e = aimLocal.e + frameRight.e * (w / 2) * sideSign + frameUp.e * (h / 2) * upSign;
+                const n = aimLocal.n + frameRight.n * (w / 2) * sideSign + frameUp.n * (h / 2) * upSign;
+                const u = aimLocal.u + frameRight.u * (w / 2) * sideSign + frameUp.u * (h / 2) * upSign;
+                return {
+                    lng:(cm ? cm.lng : target.lng) + e / (111320 * frameCosLat),
+                    lat:(cm ? cm.lat : target.lat) + n / 111320,
+                    alt:cameraEyeAlt + u
+                };
+            };
+            const fovCorners = [frameCorner(1, 1), frameCorner(-1, 1), frameCorner(-1, -1), frameCorner(1, -1)];
             const fovFrame = [...fovCorners,fovCorners[0]].map(point=>`${point.lng},${point.lat},${point.alt}`).join(' ');
             
             let fireworkStyles = '';
@@ -4517,14 +4538,15 @@
             const fovFrontAssistKml = (cm && document.getElementById('exportFrontFrame').checked)
                 ? buildFrontViewFovAssistKml(fovCorners,{lat:cm.lat,lng:cm.lng,alt:cameraEyeAlt},cameraAltitudeMode,cameraAltitude,cmOffsetValue+1.7)
                 : '';
-            // 【修正】方位角(度)も正しい大円方位角の公式に統一
-            const azimuth_deg = cm ? ((calcBearingRad(cm.lat, cm.lng, target.lat, target.lng) * 180 / Math.PI) + 360) % 360 : 0;
+            // 【修正 v3.7.4】カメラの向きは赤枠の中心をまっすぐ見る向きにそろえる。
+            // 赤枠の角度（パン）と左右調整がここに効くので、地図の赤い撮影範囲とも一致する。
+            const azimuth_deg = cm ? ((Math.atan2(aimLocal.e, aimLocal.n) * 180 / Math.PI) + 360) % 360 : 0;
 
             // 【修正1】チルト角（上下角）の計算
             // KMLのtiltは 0=真下, 90=水平, 180=真上 の定義。花火は上空(カメラより高い位置)にあるため、
             // 見上げるには90より大きい値が必要。旧コードは "90 - 仰角" と符号が逆で、常に90未満
             // (地面側)に固定されてしまい、さらに20〜80にクランプしていたため構造的に上を向けなかった。
-            const elevationAngleDeg = Math.atan(((launchCenterElev + frameAlt) - (cmElev + 1.7)) / Math.max(distM, 1)) * 180 / Math.PI;
+            const elevationAngleDeg = cm ? Math.atan2(aimLocal.u, Math.max(1e-6, Math.hypot(aimLocal.e, aimLocal.n))) * 180 / Math.PI : 0;
             const calculated_tilt = 90 + elevationAngleDeg;
             // 【修正3】余分な「+10度」補正は望遠(画角が狭い)ほど花火が画角外に出る原因になるため廃止。
             // 花火(赤枠の中心=frameAlt)をそのまま注視する角度をtiltに採用する。
