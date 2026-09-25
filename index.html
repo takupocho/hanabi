@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>花火＆撮影シミュレーター (Ver 3.7.0)</title>
+    <title>花火＆撮影シミュレーター (Ver 3.7.1)</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -161,6 +161,12 @@
         .secondary-download { color:#fff;background:linear-gradient(135deg,#7aa9ed,#657bd4); }
         .fireworks-only-download { color:#fff;background:linear-gradient(135deg,#f2a43b,#d66a20);box-shadow:0 5px 12px rgba(197,102,24,.22); }
         .reset-button { color:#807483;background:#eee9f0;font-size:11px; }
+        #windCompass { width:118px;padding:8px 8px 6px;background:rgba(255,255,255,.94);border:2px solid #cfe2ef;border-radius:14px;box-shadow:0 4px 12px rgba(40,60,80,.2);cursor:crosshair;user-select:none; }
+        #windCompassSvg { display:block;width:102px;height:102px;touch-action:none; }
+        #windCompassLabel { margin-top:3px;text-align:center;font-size:11px;font-weight:800;color:#2f5f7d;line-height:1.3; }
+        #windCompass.calm { cursor:pointer; }
+        #windCompass.calm #windCompassLabel { color:#8d9aa4; }
+        .wind-map-label { background:rgba(47,158,224,.92);color:#fff;border:0;border-radius:8px;padding:2px 7px;font-weight:800;font-size:11px;white-space:nowrap;box-shadow:0 2px 6px rgba(20,50,70,.35);text-align:center; }
         .wind-row { display:grid;grid-template-columns:32px minmax(0,1fr) 32px 58px;gap:6px;align-items:center;margin-top:4px; }
         .wind-row input[type="range"] { width:100%;padding:0;accent-color:#5aa9d6; }
         .wind-row input[type="number"] { width:58px;text-align:right;font-weight:800; }
@@ -223,7 +229,7 @@
     </style>
 </head>
 <body>
-    <h1>花火＆撮影シミュレーター (Ver 3.7.0)</h1>
+    <h1>花火＆撮影シミュレーター (Ver 3.7.1)</h1>
     <div class="main-row">
         <div id="map"></div>
         <div id="launchRotationPanel">
@@ -473,7 +479,7 @@
     </div>
 
     <script>
-        const VERSION = "3.7.0";
+        const VERSION = "3.7.1";
         const map = L.map('map', { center: [34.87438, 134.69885], zoom: 13 });
         const standardLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
         const aerialLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/{y}.jpg');
@@ -496,6 +502,22 @@
             }
         });
         map.addControl(new LayerToggleControl());
+        // 【追加 v3.7.1】風向きを地図の右下にコンパスで表示する。
+        // 「279度」と言われても向きが浮かばないので、円の中をクリック／ドラッグして直接指せるようにした。
+        const WindCompassControl = L.Control.extend({
+            options: { position: 'bottomright' },
+            onAdd: function() {
+                const box = L.DomUtil.create('div', '');
+                box.id = 'windCompass';
+                box.title = '円の中をクリック／ドラッグすると風向きを指定できます';
+                L.DomEvent.disableClickPropagation(box);
+                L.DomEvent.disableScrollPropagation(box);
+                box.innerHTML = '<svg id="windCompassSvg" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg"></svg><div id="windCompassLabel"></div>';
+                return box;
+            }
+        });
+        map.addControl(new WindCompassControl());
+        let windCompassDragging = false;
         L.Control.geocoder().addTo(map);
         // 【変更】カメラの位置を「ピンの先端」で正確に指せるよう、花火マーカーと同じ考え方の
         // ピン形状(先端が座標そのもの)に、一目でカメラとわかる図柄を組み合わせたSVGアイコンに変更。
@@ -507,7 +529,7 @@
             <circle cx="15" cy="16" r="3" fill="white"/>
         </svg>`;
         const camIcon = L.icon({ iconUrl: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(camPinSvg), iconSize: [30, 40], iconAnchor: [15, 40] });
-        let fireworkMarker, cameraMarker, line, distMarker, fovLayer, eventLabel, multiGroupLayer, launchCenterMarker, launchSelectionLayer;
+        let fireworkMarker, cameraMarker, line, distMarker, fovLayer, eventLabel, multiGroupLayer, launchCenterMarker, launchSelectionLayer, windArrowLayer;
         let mapElementsRenderToken = 0;
         let lastAutoFitKey = '';
         fovLayer = L.layerGroup().addTo(map);
@@ -2756,6 +2778,82 @@
             refreshSimulation();
         }
 
+        // 円の中の位置から風向きを決める（真上＝北）
+        function setWindBearingFromCompassPoint(clientX, clientY) {
+            const svg = document.getElementById('windCompassSvg');
+            if (!svg) return;
+            const rect = svg.getBoundingClientRect();
+            const dx = (clientX - rect.left) / rect.width * 96 - 48;
+            const dy = (clientY - rect.top) / rect.height * 96 - 48;
+            if (Math.hypot(dx, dy) < 7) return;
+            windBearing = normalizeWindBearing(Math.atan2(dx, -dy) * 180 / Math.PI);
+            if (windSpeed <= 0) windSpeed = 5;
+            updateWindUI();
+            saveSettings();
+            refreshSimulation();
+        }
+
+        function renderWindCompass() {
+            const svg = document.getElementById('windCompassSvg');
+            const box = document.getElementById('windCompass');
+            const label = document.getElementById('windCompassLabel');
+            if (!svg) return;
+            const cx = 48, cy = 48, radius = 34;
+            const active = windSpeed > 0;
+            const radians = normalizeWindBearing(windBearing) * Math.PI / 180;
+            const tipX = cx + Math.sin(radians) * radius, tipY = cy - Math.cos(radians) * radius;
+            const tailX = cx - Math.sin(radians) * radius * .82, tailY = cy + Math.cos(radians) * radius * .82;
+            const headLen = 13;
+            const h1x = tipX - Math.sin(radians - .42) * headLen, h1y = tipY + Math.cos(radians - .42) * headLen;
+            const h2x = tipX - Math.sin(radians + .42) * headLen, h2y = tipY + Math.cos(radians + .42) * headLen;
+            const stroke = active ? '#2f9ee0' : '#b8c2ca';
+            const marks = [['北',0],['東',90],['南',180],['西',270]].map(([name, bearing]) => {
+                const rad = bearing * Math.PI / 180;
+                const x = cx + Math.sin(rad) * (radius + 8), y = cy - Math.cos(rad) * (radius + 8);
+                return `<text x="${x.toFixed(1)}" y="${(y + 3.5).toFixed(1)}" text-anchor="middle" font-size="9" font-weight="bold" fill="${name === '北' ? '#d2453a' : '#8d9aa4'}">${name}</text>`;
+            }).join('');
+            svg.innerHTML = `<circle cx="${cx}" cy="${cy}" r="${radius}" fill="#f4f9fc" stroke="#cfe2ef" stroke-width="2"/>`
+                + `<line x1="${cx}" y1="${cy - radius}" x2="${cx}" y2="${cy + radius}" stroke="#e2ecf3" stroke-width="1"/>`
+                + `<line x1="${cx - radius}" y1="${cy}" x2="${cx + radius}" y2="${cy}" stroke="#e2ecf3" stroke-width="1"/>`
+                + marks
+                + `<line x1="${tailX.toFixed(1)}" y1="${tailY.toFixed(1)}" x2="${tipX.toFixed(1)}" y2="${tipY.toFixed(1)}" stroke="${stroke}" stroke-width="5" stroke-linecap="round" opacity="${active ? 1 : .5}"/>`
+                + `<polygon points="${tipX.toFixed(1)},${tipY.toFixed(1)} ${h1x.toFixed(1)},${h1y.toFixed(1)} ${h2x.toFixed(1)},${h2y.toFixed(1)}" fill="${stroke}" opacity="${active ? 1 : .5}"/>`
+                + `<circle cx="${cx}" cy="${cy}" r="4" fill="#fff" stroke="${stroke}" stroke-width="2"/>`;
+            if (box) box.classList.toggle('calm', !active);
+            if (label) label.innerHTML = active
+                ? `${getWindCompassName(windBearing)}へ<br>${windSpeed.toFixed(1)}m/s（${windBearing}°）`
+                : '風なし<br>円を押して指定';
+            if (!svg._windBound) {
+                svg._windBound = true;
+                svg.addEventListener('pointerdown', event => {
+                    event.preventDefault();
+                    windCompassDragging = true;
+                    setWindBearingFromCompassPoint(event.clientX, event.clientY);
+                });
+                window.addEventListener('pointermove', event => {
+                    if (!windCompassDragging) return;
+                    setWindBearingFromCompassPoint(event.clientX, event.clientY);
+                });
+                window.addEventListener('pointerup', () => { windCompassDragging = false; });
+            }
+        }
+
+        // 地図の上に、筒場から風下へ伸びる矢印を描く
+        function updateWindArrowOnMap() {
+            if (windArrowLayer) { map.removeLayer(windArrowLayer); windArrowLayer = null; }
+            const center = getLaunchCenter();
+            if (!center || windSpeed <= 0) return;
+            const distance = cameraMarker ? Math.max(150, map.distance(center, cameraMarker.getLatLng()) * .16) : 400;
+            const tip = destinationLatLng(center.lat, center.lng, windBearing, distance);
+            const left = destinationLatLng(tip.lat, tip.lng, windBearing + 152, distance * .26);
+            const right = destinationLatLng(tip.lat, tip.lng, windBearing - 152, distance * .26);
+            windArrowLayer = L.layerGroup([
+                L.polyline([center, tip], {color:'#2f9ee0', weight:5, opacity:.9, interactive:false}),
+                L.polygon([[tip.lat,tip.lng],[left.lat,left.lng],[right.lat,right.lng]], {color:'#2f9ee0', weight:2, fillColor:'#2f9ee0', fillOpacity:.95, interactive:false}),
+                L.marker(tip, {interactive:false, icon:L.divIcon({className:'wind-map-label', html:`風 ${windSpeed.toFixed(1)}m/s`, iconSize:[74,18], iconAnchor:[37,-8]})})
+            ]).addTo(map);
+        }
+
         function updateWindUI() {
             const speedField = document.getElementById('windSpeed');
             if (!speedField) return;
@@ -2764,6 +2862,8 @@
             document.getElementById('windBearingRange').value = windBearing;
             const group = document.getElementById('windDirectionGroup');
             group.style.opacity = windSpeed > 0 ? '1' : '.5';
+            renderWindCompass();
+            updateWindArrowOnMap();
             const status = document.getElementById('windStatus');
             if (windSpeed <= 0) { status.textContent = '風なし（光跡はまっすぐ伸びます）'; return; }
             let relative = '';
