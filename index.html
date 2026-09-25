@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>花火＆撮影シミュレーター (Ver 3.6.0)</title>
+    <title>花火＆撮影シミュレーター (Ver 3.7.0)</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -161,6 +161,13 @@
         .secondary-download { color:#fff;background:linear-gradient(135deg,#7aa9ed,#657bd4); }
         .fireworks-only-download { color:#fff;background:linear-gradient(135deg,#f2a43b,#d66a20);box-shadow:0 5px 12px rgba(197,102,24,.22); }
         .reset-button { color:#807483;background:#eee9f0;font-size:11px; }
+        .wind-row { display:grid;grid-template-columns:32px minmax(0,1fr) 32px 58px;gap:6px;align-items:center;margin-top:4px; }
+        .wind-row input[type="range"] { width:100%;padding:0;accent-color:#5aa9d6; }
+        .wind-row input[type="number"] { width:58px;text-align:right;font-weight:800; }
+        .wind-step { width:32px;height:32px;margin:0;padding:0;display:grid;place-items:center;background:#dbeaf5;color:#2f5f7d;border-radius:9px;font-size:17px;font-weight:900;line-height:1; }
+        .wind-actions { display:flex;gap:6px;margin-top:6px; }
+        .wind-actions button { margin:0;padding:6px 10px;background:#e7eef5;color:#3d5a72;font-size:11px; }
+        #windStatus { margin-top:6px;font-size:12px;color:#666; }
         .selector-row { gap:7px;margin-bottom:12px; }
         .input-group { line-height:1.35; }
         .ui-section .input-group > label:first-child { display:block;width:auto;margin:0 0 4px;color:#695d73;font-size:11px; }
@@ -216,7 +223,7 @@
     </style>
 </head>
 <body>
-    <h1>花火＆撮影シミュレーター (Ver 3.6.0)</h1>
+    <h1>花火＆撮影シミュレーター (Ver 3.7.0)</h1>
     <div class="main-row">
         <div id="map"></div>
         <div id="launchRotationPanel">
@@ -351,6 +358,25 @@
             <input type="checkbox" id="useFov" checked style="display:none">
         </div>
         <div class="input-group">
+            <label>風速 (m/s):</label>
+            <input type="number" id="windSpeed" value="0" min="0" max="15" step="0.5" style="width:80px" oninput="applyWindInput()">
+            <span style="font-weight:normal; margin-left:6px; color:#666; font-size:13px;">0〜15（予報の風速をそのまま）</span>
+        </div>
+        <div class="input-group" id="windDirectionGroup">
+            <label>風が流れる向き:</label>
+            <div class="wind-row">
+                <button type="button" class="wind-step" title="反時計回りに5度" onclick="nudgeWindBearing(-5)">−</button>
+                <input id="windBearingRange" type="range" min="0" max="359" step="1" value="0" oninput="applyWindInput(this.value)">
+                <button type="button" class="wind-step" title="時計回りに5度" onclick="nudgeWindBearing(5)">＋</button>
+                <input id="windBearing" type="number" min="0" max="359" step="1" value="0" oninput="applyWindInput(this.value)">
+            </div>
+            <div class="wind-actions">
+                <button type="button" onclick="setWindFromCamera(90)">カメラから見て右へ</button>
+                <button type="button" onclick="setWindFromCamera(-90)">カメラから見て左へ</button>
+            </div>
+            <div id="windStatus">風なし</div>
+        </div>
+        <div class="input-group">
             <label>山の稜線:</label>
             <label style="width:auto;font-weight:normal;cursor:pointer;"><input type="checkbox" id="terrainEnabled" onchange="toggleTerrainProfile()"> 2Dシミュレーションに表示</label>
             <div id="terrainStatus" style="font-size:12px;color:#666;margin-left:124px;margin-top:3px;">OFF</div>
@@ -447,7 +473,7 @@
     </div>
 
     <script>
-        const VERSION = "3.6.0";
+        const VERSION = "3.7.0";
         const map = L.map('map', { center: [34.87438, 134.69885], zoom: 13 });
         const standardLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
         const aerialLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/{y}.jpg');
@@ -565,6 +591,12 @@
         // 内側は銀白色で光り、外側だけが選んだ色になる（写真の10号玉と同じ配色）
         const starmine2InnerCss='#eef3ff', starmine2InnerKml='fffff3ee';
 
+        // ===== 風（v3.7）=====
+        // 長時間露光は星が燃え尽きるまでの軌跡を写すので、「風速 × その星の燃焼時間」だけ
+        // 光跡の先端が流される。中心付近はまだ流されていないので、時間の約2乗で効かせると
+        // 写真と同じ「先だけ揃って掃かれる羽根」の形になる。
+        let windSpeed = normalizeWindSpeed(localStorage.getItem('windSpeed'));
+        let windBearing = normalizeWindBearing(localStorage.getItem('windBearing'));
         let fireworkRealMode = localStorage.getItem('fireworkRealMode') === 'true';
         // 【変更 v3.4】単発/複数の区別は廃止。花火は必ず「筒場ごとの配列」で持つ。
         // multiFireworks は「いま編集中の筒場の花火」を入れておく作業用バッファで、
@@ -616,7 +648,7 @@
         let suppressDirtyTracking = true;
         let savedLocationLoading = false;
         const savedLocationLookupCache = new Map();
-        const workingSimulationKeys = ['eventName','focalLength','zoomFocalLength','useFov','exportGroundLevelView','exportFovFrame','exportFrontFrame','fireworkRealMode','fwOffset','cmOffset','frameAngle','frameAltOffset','frameSideOffset','orientation','primaryLaunchConfig','extraLaunchSites','fwLat','fwLon','cmLat','cmLon','selectedLaunchSiteId','terrainEnabled','buildingEnabled'];
+        const workingSimulationKeys = ['eventName','focalLength','zoomFocalLength','useFov','exportGroundLevelView','exportFovFrame','exportFrontFrame','windSpeed','windBearing','fireworkRealMode','fwOffset','cmOffset','frameAngle','frameAltOffset','frameSideOffset','orientation','primaryLaunchConfig','extraLaunchSites','fwLat','fwLon','cmLat','cmLon','selectedLaunchSiteId','terrainEnabled','buildingEnabled'];
         // 【追加 v3.4】v3.3以前だけで使っていた localStorage キー。読み込み時の移行が終わったら消す。
         const legacyStorageKeys = ['fireworkType','multiFireworks','groupAngle','singleFireworkAngle','primaryLaunchGroup'];
         // 保存フォーマットの世代。これが付いていない保存データは v3.3以前とみなして移行する。
@@ -969,6 +1001,9 @@
             const burstRpx = Math.max(r * scaleY, 8);
 
             const burstColor = getFireworkCssColor(representative.color);
+            // 横から見た図の横方向は「カメラ→筒場」の向き。風がその向きに吹いていれば奥へ流れて見える。
+            const sideBearingRad = profileBearing * Math.PI / 180;
+            const sideWindDrift = getWindDriftMeters(representative) * getWindComponent(Math.sin(sideBearingRad), Math.cos(sideBearingRad));
 
             let parts = [];
             parts.push(`<text x="${leftPad}" y="28" font-size="16" fill="#333">レンズ焦点距離：${f}mm（視野角：${vFOV.toFixed(1)}度）</text>`);
@@ -1038,13 +1073,13 @@
             // 花火の光跡
             const rayCount = 24;
             if(isFanView) {
-                parts.push(getFanSvgMarkup(fwX, fwGroundY, representative.fanLength * scaleY, representative.fanSpread, representative.lineWidth, 13, representative.color));
+                parts.push(getFanSvgMarkup(fwX, fwGroundY, representative.fanLength * scaleY, representative.fanSpread, representative.lineWidth, 13, representative.color, sideWindDrift * scaleY));
             } else if(representative.pattern==='senshoku-senrin') {
-                parts.push(fireworkRealMode?getSenrinSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,12,40,representative.color):getSenrinWireframeSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,12,representative.color));
+                parts.push(fireworkRealMode?getSenrinSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,12,40,representative.color,sideWindDrift * scaleY):getSenrinWireframeSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,12,representative.color));
             } else if(fireworkRealMode && representative.pattern==='starmine2') {
-                parts.push(getStarmine2SvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,200,representative.color,representative.starmineLength));
+                parts.push(getStarmine2SvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,200,representative.color,representative.starmineLength,sideWindDrift * scaleY));
             } else if(fireworkRealMode) {
-                parts.push(getStarmineSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,54,representative.color,representative.starmineLength));
+                parts.push(getStarmineSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,54,representative.color,representative.starmineLength,sideWindDrift * scaleY));
             } else for (let i = 0; i < rayCount; i++) {
                 const angle = (i / rayCount) * Math.PI * 2;
                 const len = burstRpx * (i % 2 === 0 ? 1 : 0.6);
@@ -1183,22 +1218,25 @@
         function normalizeFanSpread(value){return Math.max(15,Math.min(170,parseFloat(value)||90));}
         // 扇の水平方向の張り出し(片側)。地図や図面の描画範囲を決めるのに使う。
         function getFanHalfWidth(length,spread){return Math.sin(normalizeFanSpread(spread)*Math.PI/360)*normalizeFanLength(length);}
-        function getFanTrailGeometry(length=180,spread=90,count=13,pointCount=10){
+        // driftX / driftY は「燃え終わりまでに流される距離(m)」。時間の1.8乗で効かせる。
+        function getWindOffset(drift, t) { return (drift || 0) * Math.pow(t, 1.8); }
+
+        function getFanTrailGeometry(length=180,spread=90,count=13,pointCount=10,driftX=0,driftY=0){
             const safeLength=Math.max(.1,parseFloat(length)||180),safeSpread=normalizeFanSpread(spread)*Math.PI/180;
             return Array.from({length:count},(_,index)=>{
                 const ratio=count===1?.5:index/(count-1),angle=-safeSpread/2+safeSpread*ratio;
                 const variedLength=safeLength*(.9+.1*((index*7)%5)/4),points=[];
                 for(let p=0;p<pointCount;p++){
                     const t=p/(pointCount-1),gravity=safeLength*.08*t*t;
-                    points.push({x:Math.sin(angle)*variedLength*t,y:0,z:Math.cos(angle)*variedLength*t-gravity});
+                    points.push({x:Math.sin(angle)*variedLength*t+getWindOffset(driftX,t),y:getWindOffset(driftY,t),z:Math.cos(angle)*variedLength*t-gravity});
                 }
                 return {colorIndex:index%senrinCssColors.length,points};
             });
         }
-        function getFanSvgMarkup(baseX,baseY,lengthPx,spread,lineWidth=2,count=13,colorKey='mixed'){
+        function getFanSvgMarkup(baseX,baseY,lengthPx,spread,lineWidth=2,count=13,colorKey='mixed',driftPx=0){
             let markup='';
             const palette=getFireworkCssPalette(colorKey);
-            getFanTrailGeometry(lengthPx,spread,count,8).forEach(trail=>{
+            getFanTrailGeometry(lengthPx,spread,count,8,driftPx,0).forEach(trail=>{
                 const path=trail.points.map((point,index)=>`${index?'L':'M'} ${(baseX+point.x).toFixed(1)} ${(baseY-point.z).toFixed(1)}`).join(' ');
                 const color=palette[trail.colorIndex%palette.length];
                 markup+=`<path d="${path}" fill="none" stroke="${color}" stroke-opacity=".22" stroke-width="${Math.max(3,lineWidth*2.2).toFixed(1)}" stroke-linecap="round"/><path d="${path}" fill="none" stroke="${color}" stroke-width="${Math.max(1,lineWidth*.75).toFixed(1)}" stroke-linecap="round"/>`;
@@ -1226,6 +1264,7 @@
                 const extent = getStarmineExtent(size, item?.starmineLength);
                 return {bottom:center - extent.down, top:center + extent.up};
             }
+            // 風で流れても高さの範囲はほぼ変わらないので、上下端は光跡の長さだけで見る
             if (pattern === 'starmine2' && fireworkRealMode) {
                 const extent = getStarmine2Extent(size, item?.starmineLength);
                 return {bottom:center - extent.down, top:center + extent.up};
@@ -1250,7 +1289,7 @@
         // 【変更 v3.4.8】子玉1つを40本の光跡で全方向へ均等に開かせる。
         // 以前は扇状に偏っていて丸く見えなかったため、スターマインと同じ球面分布に変えた。
         // 色は子玉ごとに1色（＝彩色千輪本来の見え方）。
-        function getSenrinTrailGeometry(radius,clusterCount=12,trailsPerCluster=40,pointCount=9) {
+        function getSenrinTrailGeometry(radius,clusterCount=12,trailsPerCluster=40,pointCount=9,driftX=0,driftY=0) {
             const clusters=getSenrinChildren(radius,clusterCount);
             const goldenAngle=Math.PI*(3-Math.sqrt(5));
             const trails=[];
@@ -1265,8 +1304,8 @@
                         const t=pointIndex/(pointCount-1);
                         const gravity=radius*.07*t*t;
                         points.push({
-                            x:cluster.x+Math.cos(azimuth)*horizontal*length*t,
-                            y:cluster.y+Math.sin(azimuth)*horizontal*length*t,
+                            x:cluster.x+Math.cos(azimuth)*horizontal*length*t+getWindOffset(driftX,t),
+                            y:cluster.y+Math.sin(azimuth)*horizontal*length*t+getWindOffset(driftY,t),
                             z:cluster.z+vertical*length*t-gravity
                         });
                     }
@@ -1276,8 +1315,8 @@
             return {clusters,trails};
         }
 
-        function getSenrinSvgMarkup(centerX,centerY,radius,lineWidth,clusterCount=12,trailsPerCluster=40,colorKey='mixed') {
-            const geometry=getSenrinTrailGeometry(radius,clusterCount,trailsPerCluster,7);
+        function getSenrinSvgMarkup(centerX,centerY,radius,lineWidth,clusterCount=12,trailsPerCluster=40,colorKey='mixed',driftPx=0) {
+            const geometry=getSenrinTrailGeometry(radius,clusterCount,trailsPerCluster,7,driftPx,0);
             const palette=getFireworkCssPalette(colorKey);
             let markup='';
             geometry.trails.forEach(trail=>{
@@ -1303,7 +1342,7 @@
         const starmineBaseKmlColors=['fffff7df','ffffd7c9','ffa6e0ff'];
 
 
-        function getStarmineTrailGeometry(radius,trailCount=110,pointCount=11,lengthPercent=100) {
+        function getStarmineTrailGeometry(radius,trailCount=110,pointCount=11,lengthPercent=100,driftX=0,driftY=0) {
             const trails=[],goldenAngle=Math.PI*(3-Math.sqrt(5));
             const shape=getStarmineShape(lengthPercent);
             for(let index=0;index<trailCount;index++) {
@@ -1316,7 +1355,7 @@
                 for(let pointIndex=0;pointIndex<pointCount;pointIndex++) {
                     const t=pointIndex/(pointCount-1);
                     const gravity=radius*(.10+.035*(index%4)/3)*shape.droopScale*t*t;
-                    points.push({x:Math.cos(azimuth)*horizontal*length*t-Math.sin(azimuth)*curl*t*t,y:Math.sin(azimuth)*horizontal*length*t+Math.cos(azimuth)*curl*t*t,z:vertical*length*t-gravity});
+                    points.push({x:Math.cos(azimuth)*horizontal*length*t-Math.sin(azimuth)*curl*t*t+getWindOffset(driftX,t),y:Math.sin(azimuth)*horizontal*length*t+Math.cos(azimuth)*curl*t*t+getWindOffset(driftY,t),z:vertical*length*t-gravity});
                 }
                 const tipCycle=[0,1,0,3,2,1,0,5];
                 trails.push({baseColorIndex:index%3,tipColorIndex:tipCycle[index%tipCycle.length],points});
@@ -1335,7 +1374,7 @@
                 outerKml:option.kml?[option.kml]:senrinKmlColors
             };
         }
-        function getStarmine2TrailGeometry(radius,trailCount=220,pointCount=10,lengthPercent=100) {
+        function getStarmine2TrailGeometry(radius,trailCount=220,pointCount=10,lengthPercent=100,driftX=0,driftY=0) {
             const shape=getStarmine2Shape(lengthPercent);
             const goldenAngle=Math.PI*(3-Math.sqrt(5));
             const trails=[];
@@ -1348,7 +1387,7 @@
                 for(let pointIndex=0;pointIndex<pointCount;pointIndex++) {
                     const t=pointIndex/(pointCount-1);
                     const gravity=radius*.05*shape.droopScale*t*t;
-                    points.push({x:Math.cos(azimuth)*horizontal*length*t,y:Math.sin(azimuth)*horizontal*length*t,z:vertical*length*t-gravity});
+                    points.push({x:Math.cos(azimuth)*horizontal*length*t+getWindOffset(driftX,t),y:Math.sin(azimuth)*horizontal*length*t+getWindOffset(driftY,t),z:vertical*length*t-gravity});
                 }
                 trails.push({colorIndex:index%senrinCssColors.length,points});
             }
@@ -1359,11 +1398,11 @@
             const split=Math.max(1,Math.round((points.length-1)*.45));
             return {inner:points.slice(0,split+1),outer:points.slice(split)};
         }
-        function getStarmine2SvgMarkup(centerX,centerY,radius,lineWidth,trailCount=110,colorKey='mixed',lengthPercent=100) {
+        function getStarmine2SvgMarkup(centerX,centerY,radius,lineWidth,trailCount=110,colorKey='mixed',lengthPercent=100,driftPx=0) {
             const palettes=getStarmine2Palettes(colorKey);
             const toPath=points=>points.map((point,index)=>`${index?'L':'M'} ${(centerX+point.x).toFixed(1)} ${(centerY-point.z).toFixed(1)}`).join(' ');
             let markup='';
-            getStarmine2TrailGeometry(radius,trailCount,8,lengthPercent).forEach(trail=>{
+            getStarmine2TrailGeometry(radius,trailCount,8,lengthPercent,driftPx,0).forEach(trail=>{
                 const {inner,outer}=splitStarmine2Trail(trail.points);
                 markup+=`<path d="${toPath(inner)}" fill="none" stroke="${palettes.innerCss}" stroke-opacity=".85" stroke-width="${Math.max(.8,lineWidth*.5).toFixed(1)}" stroke-linecap="round"/>`;
                 markup+=`<path d="${toPath(outer)}" fill="none" stroke="${palettes.outerCss[trail.colorIndex%palettes.outerCss.length]}" stroke-width="${Math.max(1,lineWidth*.75).toFixed(1)}" stroke-linecap="round"/>`;
@@ -1372,10 +1411,10 @@
             return markup;
         }
 
-        function getStarmineSvgMarkup(centerX,centerY,radius,lineWidth,trailCount=54,colorKey='mixed',lengthPercent=100) {
+        function getStarmineSvgMarkup(centerX,centerY,radius,lineWidth,trailCount=54,colorKey='mixed',lengthPercent=100,driftPx=0) {
             let markup='';
             const palettes=getStarmineCssPalettes(colorKey);
-            getStarmineTrailGeometry(radius,trailCount,8,lengthPercent).forEach(trail=>{
+            getStarmineTrailGeometry(radius,trailCount,8,lengthPercent,driftPx,0).forEach(trail=>{
                 const path=trail.points.map((point,index)=>`${index?'L':'M'} ${(centerX+point.x).toFixed(1)} ${(centerY-point.z).toFixed(1)}`).join(' ');
                 const tipPoints=trail.points.slice(5);
                 const tipPath=tipPoints.map((point,index)=>`${index?'L':'M'} ${(centerX+point.x).toFixed(1)} ${(centerY-point.z).toFixed(1)}`).join(' ');
@@ -1496,6 +1535,12 @@
             const trailRadius=Math.max(.25,Math.min(3.2,.35+lineWidth*.18));
             const trajectoryRadius=Math.max(.22,Math.min(1.5,.22+lineWidth*.11));
             const localPoint=point=>({x:xOffset+point.x,y:point.y,z:altitude+point.z});
+            // モデルは筒場の向きに回転して置かれるので、風も台の軸基準に分解する
+            const modelAngle=(parseFloat(metadata.siteAngle)||0)*Math.PI/180;
+            const modelWindUnit=getWindUnitVector();
+            const modelDrift=getWindDriftMeters(item);
+            const modelDriftX=modelDrift*(Math.cos(modelAngle)*modelWindUnit.east-Math.sin(modelAngle)*modelWindUnit.north);
+            const modelDriftY=modelDrift*(Math.sin(modelAngle)*modelWindUnit.east+Math.cos(modelAngle)*modelWindUnit.north);
 
             // 専用KMZでは、花火設定の表示ON/OFFに関係なく打上げ線を含める。
             if(pattern!=='fan') {
@@ -1508,13 +1553,13 @@
 
             if(pattern==='fan') {
                 const palette=getFireworkCssPalette(item.color);
-                getFanTrailGeometry(item.fanLength,item.fanSpread,13,10).forEach(trail=>{
+                getFanTrailGeometry(item.fanLength,item.fanSpread,13,10,modelDriftX,modelDriftY).forEach(trail=>{
                     const points=trail.points.map(point=>({x:xOffset+point.x,y:point.y,z:Math.max(0,point.z)}));
                     builder.addTubePath(points,trailRadius,palette[trail.colorIndex%palette.length]);
                 });
             } else if(pattern==='senshoku-senrin'&&fireworkRealMode) {
                 const palette=getFireworkCssPalette(item.color);
-                const geometry=getSenrinTrailGeometry(burstRadius,12,12,8);
+                const geometry=getSenrinTrailGeometry(burstRadius,12,12,8,modelDriftX,modelDriftY);
                 geometry.trails.forEach(trail=>builder.addTubePath(trail.points.map(localPoint),trailRadius,palette[trail.colorIndex%palette.length]));
                 geometry.clusters.forEach((cluster,index)=>builder.addOctahedron(localPoint(cluster),Math.max(.7,trailRadius*1.45),palette[index%palette.length]));
             } else if(pattern==='senshoku-senrin') {
@@ -1537,7 +1582,7 @@
                 });
             } else if(pattern==='starmine2'&&fireworkRealMode) {
                 const palettes=getStarmine2Palettes(item.color);
-                getStarmine2TrailGeometry(burstRadius,110,8,item.starmineLength).forEach(trail=>{
+                getStarmine2TrailGeometry(burstRadius,110,8,item.starmineLength,modelDriftX,modelDriftY).forEach(trail=>{
                     const points=trail.points.map(localPoint);
                     const {inner,outer}=splitStarmine2Trail(points);
                     builder.addTubePath(inner,trailRadius*.78,palettes.innerCss);
@@ -1546,7 +1591,7 @@
                 builder.addOctahedron({x:xOffset,y:0,z:altitude},Math.max(1.4,trailRadius*2.4),'#fffbe6');
             } else if(fireworkRealMode) {
                 const palettes=getStarmineCssPalettes(item.color);
-                getStarmineTrailGeometry(burstRadius,72,9,item.starmineLength).forEach(trail=>{
+                getStarmineTrailGeometry(burstRadius,72,9,item.starmineLength,modelDriftX,modelDriftY).forEach(trail=>{
                     const points=trail.points.map(localPoint);
                     const split=Math.max(2,Math.floor((points.length-1)*.7));
                     builder.addTubePath(points.slice(0,split+1),trailRadius*.78,palettes.base[trail.baseColorIndex%palettes.base.length]);
@@ -1582,6 +1627,53 @@
                 local_x_offset_m:Number(xOffset).toFixed(2),
                 local_center_height_m:Number(altitude).toFixed(2)
             });
+        }
+
+        function normalizeWindSpeed(value) {
+            const number = parseFloat(value);
+            return Math.max(0, Math.min(15, Math.round((Number.isFinite(number) ? number : 0) * 10) / 10));
+        }
+
+        function normalizeWindBearing(value) {
+            const number = parseFloat(value);
+            return ((Math.round(Number.isFinite(number) ? number : 0) % 360) + 360) % 360;
+        }
+
+        const windCompassNames = ['北','北北東','北東','東北東','東','東南東','南東','南南東','南','南南西','南西','西南西','西','西北西','北西','北北西'];
+        function getWindCompassName(bearing) {
+            return windCompassNames[Math.round(normalizeWindBearing(bearing) / 22.5) % 16];
+        }
+
+        // 風が流れていく向きの単位ベクトル（東成分・北成分）
+        function getWindUnitVector() {
+            const radians = normalizeWindBearing(windBearing) * Math.PI / 180;
+            return {east:Math.sin(radians), north:Math.cos(radians)};
+        }
+
+        // 指定した方向ベクトル（東,北）に対する風の成分（-1〜1）
+        function getWindComponent(east, north) {
+            const wind = getWindUnitVector();
+            return wind.east * east + wind.north * north;
+        }
+
+        // 台の軸（＋x方向）に対する風の成分。編集画面の横方向がこれにあたる。
+        function getWindComponentAlongStandAxis(angleDeg) {
+            const axis = (parseFloat(angleDeg) || 0) * Math.PI / 180;
+            return getWindComponent(Math.cos(axis), -Math.sin(axis));
+        }
+
+        // 花火の種類ごとの燃焼時間(秒)。冠菊ほど長く燃えるので「長さ」設定に比例させる。
+        const fireworkBurnSeconds = {starmine:2.5, starmine2:3.5, 'senshoku-senrin':4, fan:2};
+        function getFireworkBurnSeconds(item) {
+            const pattern = normalizeFireworkPattern(item?.pattern);
+            const base = fireworkBurnSeconds[pattern] || 2.5;
+            if (pattern === 'starmine' || pattern === 'starmine2') return base * (normalizeStarmineLength(item?.starmineLength) / 100);
+            return base;
+        }
+
+        // 光跡の先端が流される距離(m)
+        function getWindDriftMeters(item) {
+            return normalizeWindSpeed(windSpeed) * getFireworkBurnSeconds(item);
         }
 
         function normalizeLaunchAngle(value) {
@@ -2505,6 +2597,8 @@
             let parts = [...guideParts, `<line x1="30" y1="${groundY}" x2="970" y2="${groundY}" stroke="#bbb" stroke-width="2" stroke-dasharray="8,6"/>`];
             // 台（打上台／台船）を地面の線の上に並べる。台1は筒場そのものなので動かせない。
             const editingSiteIndex = Math.max(0, getAllLaunchSites().findIndex(item => String(item.id) === String(editingLaunchSiteId)));
+            // 編集画面の横方向は台の軸なので、風のうち軸に沿った成分だけが横流れに見える
+            const editorWindComponent = getWindComponentAlongStandAxis(groupAngle);
             multiStands.forEach((stand, standIndex) => {
                 const sx = originX + (parseFloat(stand.xOffset) || 0) * scale;
                 const standSelected = String(selectedStandId) === String(stand.id) && selectedMultiId == null;
@@ -2526,7 +2620,7 @@
                     const topY = groundY - fanLength * scale;
                     parts.push(`<g data-fw-id="${fw.id}" style="cursor:grab;" pointer-events="all">`);
                     parts.push(`<rect x="${(x-halfWidth-8).toFixed(1)}" y="${(topY-8).toFixed(1)}" width="${(halfWidth*2+16).toFixed(1)}" height="${(groundY-topY+16).toFixed(1)}" rx="12" fill="#ffb000" fill-opacity="${selected?'.12':'.01'}" stroke="${selected?'#ffb000':'none'}" stroke-width="${selected?4:0}"/>`);
-                    parts.push(getFanSvgMarkup(x, groundY, fanLength * scale, fanSpread, fw.lineWidth, 13, fw.color));
+                    parts.push(getFanSvgMarkup(x, groundY, fanLength * scale, fanSpread, fw.lineWidth, 13, fw.color, getWindDriftMeters(fw) * editorWindComponent * scale));
                     parts.push(getFireworkBadgeMarkup(x, topY - 20, index, '#ff9f0a', selected));
                     parts.push(`<circle cx="${x.toFixed(1)}" cy="${groundY}" r="4" fill="#fff" stroke="#252333" stroke-width="1"/></g>`);
                     return;
@@ -2540,9 +2634,9 @@
                 parts.push(`<g data-fw-id="${fw.id}" style="cursor:grab;" pointer-events="all">`);
                 parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${radius.toFixed(1)}" fill="${color}" fill-opacity="${fireworkRealMode||normalizeFireworkPattern(fw.pattern)==='senshoku-senrin'?'0':'.08'}" stroke="${selected?'#ffb000':color}" stroke-opacity="${fireworkRealMode?(selected?'.65':'0'):(normalizeFireworkPattern(fw.pattern)==='senshoku-senrin'?(selected?'.65':'0'):'1')}" stroke-width="${selected ? 5 : 3}"/>`);
                 if(normalizeFireworkPattern(fw.pattern)==='senshoku-senrin') {
-                    parts.push(fireworkRealMode?getSenrinSvgMarkup(x,y,radius,fw.lineWidth,12,40,fw.color):getSenrinWireframeSvgMarkup(x,y,radius,fw.lineWidth,12,fw.color));
-                } else if(fireworkRealMode && normalizeFireworkPattern(fw.pattern)==='starmine2') parts.push(getStarmine2SvgMarkup(x,y,radius,fw.lineWidth,180,fw.color,fw.starmineLength));
-                else if(fireworkRealMode) parts.push(getStarmineSvgMarkup(x,y,radius,fw.lineWidth,44,fw.color,fw.starmineLength)); else [-0.65, 0, 0.65].forEach(v => parts.push(`<ellipse cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" rx="${Math.max(3, radius * Math.sqrt(1-v*v)).toFixed(1)}" ry="${radius.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${Math.max(1.5, fw.lineWidth * .7)}"/>`));
+                    parts.push(fireworkRealMode?getSenrinSvgMarkup(x,y,radius,fw.lineWidth,12,40,fw.color,getWindDriftMeters(fw)*editorWindComponent*scale):getSenrinWireframeSvgMarkup(x,y,radius,fw.lineWidth,12,fw.color));
+                } else if(fireworkRealMode && normalizeFireworkPattern(fw.pattern)==='starmine2') parts.push(getStarmine2SvgMarkup(x,y,radius,fw.lineWidth,180,fw.color,fw.starmineLength,getWindDriftMeters(fw)*editorWindComponent*scale));
+                else if(fireworkRealMode) parts.push(getStarmineSvgMarkup(x,y,radius,fw.lineWidth,44,fw.color,fw.starmineLength,getWindDriftMeters(fw)*editorWindComponent*scale)); else [-0.65, 0, 0.65].forEach(v => parts.push(`<ellipse cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" rx="${Math.max(3, radius * Math.sqrt(1-v*v)).toFixed(1)}" ry="${radius.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${Math.max(1.5, fw.lineWidth * .7)}"/>`));
                 parts.push(getFireworkBadgeMarkup(x, y - radius - 20, index, color, selected));
                 parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#fff" stroke="#252333" stroke-width="1"/></g>`);
             });
@@ -2629,6 +2723,59 @@
         async function getElevation(lat, lon) {
             const url = `https://cyberjapandata2.gsi.go.jp/general/dem/scripts/getelevation.php?lon=${lon}&lat=${lat}&outtype=JSON`;
             try { const res = await fetch(url); const data = await res.json(); const elev = parseFloat(data.elevation); return (isNaN(elev) || elev < 0) ? 0 : elev; } catch(e) { return 0; }
+        }
+
+        // ===== 風の入力（v3.7） =====
+        function applyWindInput(bearingValue) {
+            windSpeed = normalizeWindSpeed(document.getElementById('windSpeed').value);
+            if (bearingValue !== undefined) windBearing = normalizeWindBearing(bearingValue);
+            updateWindUI();
+            saveSettings();
+            refreshSimulation();
+        }
+
+        function nudgeWindBearing(delta) {
+            windBearing = normalizeWindBearing(windBearing + delta);
+            updateWindUI();
+            saveSettings();
+            refreshSimulation();
+        }
+
+        // 花火の方を向いたカメラから見て、右(+90)／左(-90)へ流れる向きに合わせる
+        function setWindFromCamera(relativeDeg) {
+            const center = getLaunchCenter();
+            if (!cameraMarker || !center) { alert('先にカメラと筒場の位置を設定してください'); return; }
+            const cm = cameraMarker.getLatLng();
+            const viewBearing = calcBearingRad(cm.lat, cm.lng, center.lat, center.lng) * 180 / Math.PI;
+            windBearing = normalizeWindBearing(viewBearing + relativeDeg);
+            // 入力欄に打った風速を取りこぼさない。まだ0なら5m/sから始める。
+            windSpeed = normalizeWindSpeed(document.getElementById('windSpeed').value);
+            if (windSpeed <= 0) windSpeed = 5;
+            updateWindUI();
+            saveSettings();
+            refreshSimulation();
+        }
+
+        function updateWindUI() {
+            const speedField = document.getElementById('windSpeed');
+            if (!speedField) return;
+            speedField.value = windSpeed;
+            document.getElementById('windBearing').value = windBearing;
+            document.getElementById('windBearingRange').value = windBearing;
+            const group = document.getElementById('windDirectionGroup');
+            group.style.opacity = windSpeed > 0 ? '1' : '.5';
+            const status = document.getElementById('windStatus');
+            if (windSpeed <= 0) { status.textContent = '風なし（光跡はまっすぐ伸びます）'; return; }
+            let relative = '';
+            const center = getLaunchCenter();
+            if (cameraMarker && center) {
+                const cm = cameraMarker.getLatLng();
+                const viewBearing = calcBearingRad(cm.lat, cm.lng, center.lat, center.lng) * 180 / Math.PI;
+                const diff = ((windBearing - viewBearing + 540) % 360) - 180;
+                const side = Math.abs(diff) < 20 ? '奥へ' : Math.abs(diff) > 160 ? '手前へ' : diff > 0 ? '右へ' : '左へ';
+                relative = `　カメラから見て${side}流れます`;
+            }
+            status.textContent = `${getWindCompassName(windBearing)}へ ${windSpeed.toFixed(1)}m/s${relative}`;
         }
 
         function toggleTerrainProfile() {
@@ -2959,6 +3106,8 @@
                 exportGroundLevelView: document.getElementById('exportGroundLevelView').checked,
                 exportFovFrame: document.getElementById('exportFovFrame').checked,
                 exportFrontFrame: document.getElementById('exportFrontFrame').checked,
+                windSpeed,
+                windBearing,
                 fireworkRealMode,
                 fwOffset: document.getElementById('fwOffset').value,
                 cmOffset: document.getElementById('cmOffset').value,
@@ -2996,6 +3145,9 @@
             document.getElementById('exportGroundLevelView').checked = !!state.exportGroundLevelView;
             document.getElementById('exportFovFrame').checked = !!state.exportFovFrame;
             document.getElementById('exportFrontFrame').checked = !!state.exportFrontFrame;
+            windSpeed = normalizeWindSpeed(state.windSpeed);
+            windBearing = normalizeWindBearing(state.windBearing);
+            updateWindUI();
             fireworkRealMode = !!state.fireworkRealMode;
             document.getElementById('fwOffset').value = state.fwOffset || 0;
             document.getElementById('cmOffset').value = state.cmOffset || 0;
@@ -3373,7 +3525,7 @@
             suppressDirtyTracking = true;
             const blank = {
                 stateVersion:STATE_VERSION,
-                eventName:'',focalLength:50,zoomFocalLength:'',useFov:false,exportGroundLevelView:false,exportFovFrame:false,exportFrontFrame:false,fireworkRealMode:false,
+                eventName:'',focalLength:50,zoomFocalLength:'',useFov:false,exportGroundLevelView:false,exportFovFrame:false,exportFrontFrame:false,windSpeed:0,windBearing:0,fireworkRealMode:false,
                 fwOffset:0,cmOffset:0,frameAngle:0,frameAltOffset:0,frameSideOffset:0,orientation:'landscape',
                 primaryLaunchConfig:null,extraLaunchSites:[],terrainEnabled:false,buildingEnabled:false,
                 fwLat:null,fwLon:null,cmLat:null,cmLon:null
@@ -3486,6 +3638,7 @@
             document.getElementById('exportGroundLevelView').checked = localStorage.getItem('exportGroundLevelView') === 'true';
             document.getElementById('exportFovFrame').checked = localStorage.getItem('exportFovFrame') === 'true';
             document.getElementById('exportFrontFrame').checked = localStorage.getItem('exportFrontFrame') === 'true';
+            updateWindUI();
             document.getElementById('terrainEnabled').checked = terrainEnabled;
             document.getElementById('terrainStatus').textContent = terrainEnabled ? '稜線を計算中…' : 'OFF';
             document.getElementById('buildingEnabled').checked = buildingEnabled;
@@ -3592,6 +3745,8 @@
             updatePreviewPanel();
             updateSideViewPanel();
             updatePlacementModeUI();
+            // 風の説明文は「カメラから見てどちらへ流れるか」を含むので、位置が変わるたびに更新する
+            updateWindUI();
         }
 
         function updateCompositePreviewPanel() {
@@ -3613,6 +3768,8 @@
             }
             const viewBearing = cm ? calcBearingRad(cm.lat, cm.lng, center.lat, center.lng) : 0;
             const rightEast = Math.cos(viewBearing), rightNorth = -Math.sin(viewBearing);
+            // 2Dシミュレーションの横方向は「カメラから見た右」なので、その成分で流す
+            const previewWindComponent = getWindComponent(rightEast, rightNorth);
             const forwardEast = Math.sin(viewBearing), forwardNorth = Math.cos(viewBearing);
             const baseDistance = cm ? Math.max(1,map.distance(cm,center)) : 1000;
             const projectPoint = ll => {
@@ -3660,6 +3817,7 @@
                         lineWidth:parseFloat(item.lineWidth)||2,
                         pattern,
                         starmineLength:normalizeStarmineLength(item.starmineLength),
+                        windDrift:getWindDriftMeters(item),
                         showTrajectory:item.showTrajectory!==false,
                         siteIndex,
                         itemIndex
@@ -3739,7 +3897,7 @@
                 // 扇形花火：打上軌道も開花円も描かず、地面から扇を立ち上げる
                 if(b.pattern==='fan'){
                     parts.push(`<g opacity="${opacity.toFixed(2)}">`);
-                    parts.push(getFanSvgMarkup(ex,groundY,b.fanLength*scale,b.fanSpread,b.lineWidth,13,b.colorKey));
+                    parts.push(getFanSvgMarkup(ex,groundY,b.fanLength*scale,b.fanSpread,b.lineWidth,13,b.colorKey,b.windDrift*previewWindComponent*scale));
                     parts.push(`<text x="${ex.toFixed(1)}" y="${(toY(b.fanLength)-6).toFixed(1)}" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">扇形花火 ${b.fanLength.toFixed(0)}m</text></g>`);
                     return;
                 }
@@ -3747,7 +3905,8 @@
                 if(b.showTrajectory!==false) parts.push(`<path d="M ${sx.toFixed(1)} ${sy.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}" fill="none" stroke="#fff" stroke-width="2" opacity="${opacity.toFixed(2)}"/>`);
                 const r=Math.max(3,b.radius*scale);
                 parts.push(`<g opacity="${opacity.toFixed(2)}"><circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="${r.toFixed(1)}" fill="${b.color}" fill-opacity="${fireworkRealMode||b.pattern==='senshoku-senrin'?'0':'.08'}" stroke="${b.color}" stroke-opacity="${fireworkRealMode||b.pattern==='senshoku-senrin'?'0':'1'}" stroke-width="${Math.max(1,b.lineWidth).toFixed(1)}"/>`);
-                if(b.pattern==='senshoku-senrin') parts.push(fireworkRealMode?getSenrinSvgMarkup(ex,ey,r,b.lineWidth,12,40,b.colorKey):getSenrinWireframeSvgMarkup(ex,ey,r,b.lineWidth,12,b.colorKey)); else if(fireworkRealMode&&b.pattern==='starmine2') parts.push(getStarmine2SvgMarkup(ex,ey,r,b.lineWidth,180,b.colorKey,b.starmineLength)); else if(fireworkRealMode) parts.push(getStarmineSvgMarkup(ex,ey,r,b.lineWidth,44,b.colorKey,b.starmineLength)); else [0.38,0.7].forEach(v=>parts.push(`<ellipse cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" rx="${(r*v).toFixed(1)}" ry="${r.toFixed(1)}" fill="none" stroke="${b.color}" stroke-width="${Math.max(1,b.lineWidth*.65).toFixed(1)}"/>`));
+                const burstDrift=b.windDrift*previewWindComponent*scale;
+                if(b.pattern==='senshoku-senrin') parts.push(fireworkRealMode?getSenrinSvgMarkup(ex,ey,r,b.lineWidth,12,40,b.colorKey,burstDrift):getSenrinWireframeSvgMarkup(ex,ey,r,b.lineWidth,12,b.colorKey)); else if(fireworkRealMode&&b.pattern==='starmine2') parts.push(getStarmine2SvgMarkup(ex,ey,r,b.lineWidth,180,b.colorKey,b.starmineLength,burstDrift)); else if(fireworkRealMode) parts.push(getStarmineSvgMarkup(ex,ey,r,b.lineWidth,44,b.colorKey,b.starmineLength,burstDrift)); else [0.38,0.7].forEach(v=>parts.push(`<ellipse cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" rx="${(r*v).toFixed(1)}" ry="${r.toFixed(1)}" fill="none" stroke="${b.color}" stroke-width="${Math.max(1,b.lineWidth*.65).toFixed(1)}"/>`));
                 parts.push(`<text x="${ex.toFixed(1)}" y="${(ey-r-5).toFixed(1)}" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">${getFireworkPatternLabel(b.pattern)} ${b.size}号</text></g>`);
             });
             tubes.forEach(t=>{
@@ -3938,22 +4097,30 @@
                     fireworkStyles+=realPalettes.tip.map((color,colorIndex)=>`<Style id="${realStylePrefix}TipGlow${colorIndex}"><LineStyle><color>66${color.slice(2)}</color><width>${Math.max(2,senrinLineWidth*2.5)}</width></LineStyle></Style><Style id="${realStylePrefix}Tip${colorIndex}"><LineStyle><color>${color}</color><width>${Math.max(1,senrinLineWidth)}</width></LineStyle></Style>`).join('');
                     fireworkStyles+=`<Style id="${realStylePrefix}Core"><LineStyle><color>${realPalettes.tip[0]}</color><width>${Math.max(3,senrinLineWidth*1.5)}</width></LineStyle></Style>`;
                 }
+                // KMLは3次元なので、風を東西・南北に分けてそのまま効かせる
+                const windUnit=getWindUnitVector();
+                const windDriftMeters=getWindDriftMeters(item);
+                const windDriftEast=windDriftMeters*windUnit.east;
+                const windDriftNorth=windDriftMeters*windUnit.north;
                 let burst = '';
                 if(pattern==='fan') {
                     // 扇形花火：地面(originElev)から扇状に伸びる13本の光跡
                     const fanLength=normalizeFanLength(item.fanLength),fanSpread=normalizeFanSpread(item.fanSpread);
                     const byColor=fanPalette.map(()=>[]);
-                    getFanTrailGeometry(fanLength,fanSpread,13,10).forEach(trail=>{
+                    // 風は台の軸方向と、軸に直交する方向に分けて渡す
+                    const fanAxisDrift=windDriftMeters*Math.cos(lateralBearing)*windUnit.east+windDriftMeters*(-Math.sin(lateralBearing))*windUnit.north;
+                    const fanCrossDrift=windDriftMeters*Math.sin(lateralBearing)*windUnit.east+windDriftMeters*Math.cos(lateralBearing)*windUnit.north;
+                    getFanTrailGeometry(fanLength,fanSpread,13,10,fanAxisDrift,fanCrossDrift).forEach(trail=>{
                         const coords=trail.points.map(point=>{
-                            const lng=centerLon+Math.cos(lateralBearing)*point.x/(111320*Math.cos(centerLat*Math.PI/180));
-                            const lat=centerLat-Math.sin(lateralBearing)*point.x/111320;
+                            const lng=centerLon+(Math.cos(lateralBearing)*point.x+Math.sin(lateralBearing)*point.y)/(111320*Math.cos(centerLat*Math.PI/180));
+                            const lat=centerLat+(-Math.sin(lateralBearing)*point.x+Math.cos(lateralBearing)*point.y)/111320;
                             return `${lng},${lat},${originElev+Math.max(0,point.z)}`;
                         }).join(' ');
                         byColor[trail.colorIndex%byColor.length].push(`<LineString><altitudeMode>absolute</altitudeMode><tessellate>0</tessellate><coordinates>${coords}</coordinates></LineString>`);
                     });
                     byColor.forEach((lines,colorIndex)=>{if(lines.length){const geometryMarkup=`<MultiGeometry>${lines.join('')}</MultiGeometry>`;burst+=`<Placemark><name>扇形花火・光彩 ${colorIndex+1}</name><styleUrl>#${fanStylePrefix}Glow${colorIndex}</styleUrl>${geometryMarkup}</Placemark><Placemark><name>扇形花火・光跡 ${colorIndex+1}</name><styleUrl>#${fanStylePrefix}${colorIndex}</styleUrl>${geometryMarkup}</Placemark>`;}});
                 } else if(pattern==='senshoku-senrin'&&fireworkRealMode) {
-                    const geometry=getSenrinTrailGeometry(radius,12,40,9);
+                    const geometry=getSenrinTrailGeometry(radius,12,40,9,windDriftEast,windDriftNorth);
                     const byColor=senrinPalette.map(()=>[]);
                     geometry.trails.forEach(trail=>{
                         const coords=trail.points.map(point=>`${centerLon+point.x/(111320*Math.cos(centerLat*Math.PI/180))},${centerLat+point.y/111320},${originElev+altitude+point.z}`).join(' ');
@@ -3990,7 +4157,7 @@
                     // スターマイン2（菊型）：220本を全方向へ均等に。内側は銀白、外側は選んだ色。
                     const innerLines=[],outerGroups=s2Palettes.outerKml.map(()=>[]);
                     const toLine=points=>`<LineString><altitudeMode>absolute</altitudeMode><tessellate>0</tessellate><coordinates>${points.map(point=>`${centerLon+point.x/(111320*Math.cos(centerLat*Math.PI/180))},${centerLat+point.y/111320},${originElev+altitude+point.z}`).join(' ')}</coordinates></LineString>`;
-                    getStarmine2TrailGeometry(radius,220,10,item.starmineLength).forEach(trail=>{
+                    getStarmine2TrailGeometry(radius,220,10,item.starmineLength,windDriftEast,windDriftNorth).forEach(trail=>{
                         const {inner,outer}=splitStarmine2Trail(trail.points);
                         innerLines.push(toLine(inner));
                         outerGroups[trail.colorIndex%outerGroups.length].push(toLine(outer));
@@ -4002,7 +4169,7 @@
                     burst+=`<Placemark><name>スターマイン2の発光中心</name><styleUrl>#${s2StylePrefix}Core</styleUrl><MultiGeometry><LineString><altitudeMode>absolute</altitudeMode><coordinates>${centerLon-core/(111320*Math.cos(centerLat*Math.PI/180))},${centerLat},${originElev+altitude} ${centerLon+core/(111320*Math.cos(centerLat*Math.PI/180))},${centerLat},${originElev+altitude}</coordinates></LineString><LineString><altitudeMode>absolute</altitudeMode><coordinates>${centerLon},${centerLat},${originElev+altitude-core} ${centerLon},${centerLat},${originElev+altitude+core}</coordinates></LineString></MultiGeometry></Placemark>`;
                 } else if(fireworkRealMode) {
                     const baseGroups=realPalettes.base.map(()=>[]),tipGroups=realPalettes.tip.map(()=>[]);
-                    getStarmineTrailGeometry(radius,110,11,item.starmineLength).forEach(trail=>{
+                    getStarmineTrailGeometry(radius,110,11,item.starmineLength,windDriftEast,windDriftNorth).forEach(trail=>{
                         const toLine=points=>`<LineString><altitudeMode>absolute</altitudeMode><tessellate>0</tessellate><coordinates>${points.map(point=>`${centerLon+point.x/(111320*Math.cos(centerLat*Math.PI/180))},${centerLat+point.y/111320},${originElev+altitude+point.z}`).join(' ')}</coordinates></LineString>`;
                         baseGroups[trail.baseColorIndex%baseGroups.length].push(toLine(trail.points));
                         tipGroups[trail.tipColorIndex%tipGroups.length].push(toLine(trail.points.slice(7)));
@@ -4180,6 +4347,8 @@
             localStorage.setItem('exportGroundLevelView', document.getElementById('exportGroundLevelView').checked);
             localStorage.setItem('exportFovFrame', document.getElementById('exportFovFrame').checked);
             localStorage.setItem('exportFrontFrame', document.getElementById('exportFrontFrame').checked);
+            localStorage.setItem('windSpeed', windSpeed);
+            localStorage.setItem('windBearing', windBearing);
             localStorage.setItem('stateVersion', STATE_VERSION);
             localStorage.setItem('fireworkRealMode',fireworkRealMode);
             // 花火追加ポップアップの初期値として、最後に使った内容を覚えておく
