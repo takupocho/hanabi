@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>花火＆撮影シミュレーター (Ver 3.7.2)</title>
+    <title>花火＆撮影シミュレーター (Ver 3.7.3)</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -236,7 +236,7 @@
     </style>
 </head>
 <body>
-    <h1>花火＆撮影シミュレーター (Ver 3.7.2)</h1>
+    <h1>花火＆撮影シミュレーター (Ver 3.7.3)</h1>
     <div class="main-row">
         <div id="map"></div>
         <div id="launchRotationPanel">
@@ -471,6 +471,10 @@
                 <span><b>地面レベルビューで書き出す</b><small>Google Earth Proの「地面レベルビュー」で、撮影位置の地面から1.7mの目線で開きます</small></span>
             </label>
             <label class="export-option">
+                <input id="exportOpenWide" type="checkbox" onchange="saveSettings()" checked>
+                <span><b>開いたときは引きで表示</b><small>「ズーム後の焦点距離」の画角で開き、画角枠の全体を確認できます。実際の構図は「固定カメラ設定」をダブルクリック</small></span>
+            </label>
+            <label class="export-option">
                 <input id="exportFovFrame" type="checkbox" onchange="saveSettings()">
                 <span><b>垂直画角枠</b><small>花火の位置に、写る範囲を示す赤い四角を置きます</small></span>
             </label>
@@ -486,7 +490,7 @@
     </div>
 
     <script>
-        const VERSION = "3.7.2";
+        const VERSION = "3.7.3";
         const map = L.map('map', { center: [34.87438, 134.69885], zoom: 13 });
         const standardLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
         const aerialLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/{y}.jpg');
@@ -678,7 +682,7 @@
         let suppressDirtyTracking = true;
         let savedLocationLoading = false;
         const savedLocationLookupCache = new Map();
-        const workingSimulationKeys = ['eventName','focalLength','zoomFocalLength','useFov','exportGroundLevelView','exportFovFrame','exportFrontFrame','windSpeed','windBearing','fireworkRealMode','fwOffset','cmOffset','frameAngle','frameAltOffset','frameSideOffset','orientation','primaryLaunchConfig','extraLaunchSites','fwLat','fwLon','cmLat','cmLon','selectedLaunchSiteId','terrainEnabled','buildingEnabled'];
+        const workingSimulationKeys = ['eventName','focalLength','zoomFocalLength','useFov','exportGroundLevelView','exportFovFrame','exportFrontFrame','exportOpenWide','windSpeed','windBearing','fireworkRealMode','fwOffset','cmOffset','frameAngle','frameAltOffset','frameSideOffset','orientation','primaryLaunchConfig','extraLaunchSites','fwLat','fwLon','cmLat','cmLon','selectedLaunchSiteId','terrainEnabled','buildingEnabled'];
         // 【追加 v3.4】v3.3以前だけで使っていた localStorage キー。読み込み時の移行が終わったら消す。
         const legacyStorageKeys = ['fireworkType','multiFireworks','groupAngle','singleFireworkAngle','primaryLaunchGroup'];
         // 保存フォーマットの世代。これが付いていない保存データは v3.3以前とみなして移行する。
@@ -3305,6 +3309,7 @@
                 zoomFocalLength: document.getElementById('zoomFocalLength').value,
                 useFov: document.getElementById('useFov').checked,
                 exportGroundLevelView: document.getElementById('exportGroundLevelView').checked,
+                exportOpenWide: document.getElementById('exportOpenWide').checked,
                 exportFovFrame: document.getElementById('exportFovFrame').checked,
                 exportFrontFrame: document.getElementById('exportFrontFrame').checked,
                 windSpeed,
@@ -3344,6 +3349,7 @@
             document.getElementById('zoomFocalLength').value = state.zoomFocalLength || "";
             document.getElementById('useFov').checked = true;
             document.getElementById('exportGroundLevelView').checked = !!state.exportGroundLevelView;
+            document.getElementById('exportOpenWide').checked = state.exportOpenWide !== false;
             document.getElementById('exportFovFrame').checked = !!state.exportFovFrame;
             document.getElementById('exportFrontFrame').checked = !!state.exportFrontFrame;
             windSpeed = normalizeWindSpeed(state.windSpeed);
@@ -3726,7 +3732,7 @@
             suppressDirtyTracking = true;
             const blank = {
                 stateVersion:STATE_VERSION,
-                eventName:'',focalLength:50,zoomFocalLength:'',useFov:false,exportGroundLevelView:false,exportFovFrame:false,exportFrontFrame:false,windSpeed:0,windBearing:0,fireworkRealMode:false,
+                eventName:'',focalLength:50,zoomFocalLength:'',useFov:false,exportGroundLevelView:false,exportOpenWide:true,exportFovFrame:false,exportFrontFrame:false,windSpeed:0,windBearing:0,fireworkRealMode:false,
                 fwOffset:0,cmOffset:0,frameAngle:0,frameAltOffset:0,frameSideOffset:0,orientation:'landscape',
                 primaryLaunchConfig:null,extraLaunchSites:[],terrainEnabled:false,buildingEnabled:false,
                 fwLat:null,fwLon:null,cmLat:null,cmLon:null
@@ -3837,6 +3843,7 @@
             document.getElementById('zoomFocalLength').value = localStorage.getItem('zoomFocalLength') || "";
             document.getElementById('useFov').checked = true;
             document.getElementById('exportGroundLevelView').checked = localStorage.getItem('exportGroundLevelView') === 'true';
+            document.getElementById('exportOpenWide').checked = localStorage.getItem('exportOpenWide') !== 'false';
             document.getElementById('exportFovFrame').checked = localStorage.getItem('exportFovFrame') === 'true';
             document.getElementById('exportFrontFrame').checked = localStorage.getItem('exportFrontFrame') === 'true';
             updateWindUI();
@@ -4530,7 +4537,8 @@
             const groundLevelOption = exportGroundLevelView ? '<gx:ViewerOptions><gx:option name="groundlevel" enabled="1"/></gx:ViewerOptions>' : '';
             const cameraView = (viewFov, viewTilt = tilt_deg) => `<Camera>${groundLevelOption}<longitude>${cm.lng}</longitude><latitude>${cm.lat}</latitude><altitude>${cameraAltitude}</altitude><heading>${azimuth_deg}</heading><tilt>${viewTilt}</tilt><roll>0</roll><altitudeMode>${cameraAltitudeMode}</altitudeMode><gx:horizFov>${viewFov}</gx:horizFov></Camera>`;
 
-            const fixedCamKML = (!isTour && cm) ? `<Folder><name>固定カメラ設定: ${f}mm${exportGroundLevelView?'（地面レベルビュー）':''}</name>${cameraView(hFOV.toFixed(2))}</Folder>` : "";
+            // 固定カメラ設定は「実際に撮る構図」なので、常に本来の焦点距離のまま
+            const fixedCamKML = cm ? `<Folder><name>固定カメラ設定: ${f}mm（実際の構図）${exportGroundLevelView?'・地面レベルビュー':''}</name>${cameraView(hFOV.toFixed(2))}</Folder>` : "";
             
             // 【修正2】ツアー時、最初のFlyToのtiltを「90（水平）」に。移動後のFlyToの後に「30秒Wait」を追加
             // 地上レベルビューのときは、最初から花火の方を向いた画角で始める（水平からの引きを挟まない）
@@ -4538,7 +4546,12 @@
             
             // 【変更 v3.4.9】垂直画角枠もチェックしたときだけ出す
             const fovFrameKml = document.getElementById('exportFovFrame').checked ? `<Placemark><name>垂直画角枠</name><styleUrl>#sFov</styleUrl><LineString><altitudeMode>absolute</altitudeMode><coordinates>${fovFrame}</coordinates></LineString></Placemark>` : '';
-            const camKML = cm ? `${cameraView(hFOV.toFixed(2))}<Placemark><name>カメラ位置</name><styleUrl>#sCam</styleUrl><Point><altitudeMode>absolute</altitudeMode><coordinates>${cm.lng},${cm.lat},${cmElev}</coordinates></Point></Placemark><Placemark><name>全筒場中心までの距離ライン</name><styleUrl>#sDistLine</styleUrl><LineString><altitudeMode>absolute</altitudeMode><coordinates>${target.lng},${target.lat},${launchCenterElev} ${cm.lng},${cm.lat},${cmElev}</coordinates></LineString></Placemark>${fovFrameKml}` : "";
+            // 【追加 v3.7.3】KMLを開いた瞬間の視点はDocument直下の<Camera>で決まる。
+            // ここだけ「ズーム後の焦点距離」の広い画角にしておくと、画角枠の全体が最初から見える。
+            // 実際の構図で見たいときは「固定カメラ設定」をダブルクリックする（そちらは本来の焦点距離のまま）。
+            const openWide = document.getElementById('exportOpenWide').checked;
+            const openHFOV = openWide ? zoomHFOV : hFOV;
+            const camKML = cm ? `${cameraView(openHFOV.toFixed(2))}<Placemark><name>カメラ位置</name><styleUrl>#sCam</styleUrl><Point><altitudeMode>absolute</altitudeMode><coordinates>${cm.lng},${cm.lat},${cmElev}</coordinates></Point></Placemark><Placemark><name>全筒場中心までの距離ライン</name><styleUrl>#sDistLine</styleUrl><LineString><altitudeMode>absolute</altitudeMode><coordinates>${target.lng},${target.lat},${launchCenterElev} ${cm.lng},${cm.lat},${cmElev}</coordinates></LineString></Placemark>${fovFrameKml}` : "";
             
             const kml = `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2"><Document><Style id="sCam"><IconStyle><Icon><href>http://maps.google.com/mapfiles/kml/shapes/camera.png</href></Icon></IconStyle></Style>${fireworkStyles}<Style id="sTrajectory"><LineStyle><color>ffffffff</color><width>2</width></LineStyle></Style><Style id="sTrajectoryReal"><LineStyle><color>ff33bbff</color><width>3</width></LineStyle></Style><Style id="sDistLine"><LineStyle><color>ffffff00</color><width>2</width></LineStyle></Style><Style id="sFov"><LineStyle><color>ff0000ff</color><width>3</width></LineStyle></Style><Style id="sFovFrontHalo"><LineStyle><color>ddffffff</color><width>9</width></LineStyle></Style><Style id="sFovFront"><LineStyle><color>ff0000ff</color><width>6</width></LineStyle></Style>${fireworkKml}${camKML}${fovFrontAssistKml}${tourKML}${fixedCamKML}</Document></kml>`;
             const blob = new Blob([kml], {type:'application/vnd.google-earth.kml+xml'});
@@ -4555,6 +4568,7 @@
             localStorage.setItem('zoomFocalLength', document.getElementById('zoomFocalLength').value);
             localStorage.setItem('useFov', document.getElementById('useFov').checked);
             localStorage.setItem('exportGroundLevelView', document.getElementById('exportGroundLevelView').checked);
+            localStorage.setItem('exportOpenWide', document.getElementById('exportOpenWide').checked);
             localStorage.setItem('exportFovFrame', document.getElementById('exportFovFrame').checked);
             localStorage.setItem('exportFrontFrame', document.getElementById('exportFrontFrame').checked);
             localStorage.setItem('windSpeed', windSpeed);
