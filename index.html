@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>花火＆撮影シミュレーター (Ver 3.7.6)</title>
+    <title>花火＆撮影シミュレーター (Ver 3.7.7)</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -236,7 +236,7 @@
     </style>
 </head>
 <body>
-    <h1>花火＆撮影シミュレーター (Ver 3.7.6)</h1>
+    <h1>花火＆撮影シミュレーター (Ver 3.7.7)</h1>
     <div class="main-row">
         <div id="map"></div>
         <div id="launchRotationPanel">
@@ -490,7 +490,7 @@
     </div>
 
     <script>
-        const VERSION = "3.7.6";
+        const VERSION = "3.7.7";
         const map = L.map('map', { center: [34.87438, 134.69885], zoom: 13 });
         const standardLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
         const aerialLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/{y}.jpg');
@@ -1130,6 +1130,10 @@
             const sideBearingRad = profileBearing * Math.PI / 180;
             const sideWindDrift = getWindDriftMeters(representative) * getWindComponent(Math.sin(sideBearingRad), Math.cos(sideBearingRad));
             const sideWindSag = getWindSagMeters(representative);
+            // 【追加 v3.7.7】打上げ中に流される分。横軸は距離なので距離のスケールで換算する
+            const sideDistanceScale = drawableW / Math.max(1, distM);
+            const sideShellShiftPx = getShellWindDriftMeters(representative) * getWindComponent(Math.sin(sideBearingRad), Math.cos(sideBearingRad)) * sideDistanceScale;
+            const burstX = fwX + sideShellShiftPx;
 
             let parts = [];
             parts.push(`<text x="${leftPad}" y="28" font-size="16" fill="#333">レンズ焦点距離：${f}mm（視野角：${vFOV.toFixed(1)}度）</text>`);
@@ -1185,7 +1189,7 @@
 
             // 花火の高さ（扇形花火は地面から立ち上がるので高さの線は引かない）
             if (!isFanView) {
-                parts.push(`<line x1="${fwX.toFixed(1)}" y1="${burstY.toFixed(1)}" x2="${fwX.toFixed(1)}" y2="${fwGroundY.toFixed(1)}" stroke="#333" stroke-width="1"/>`);
+                parts.push(`<path d="${getLaunchPathMarkup(fwX, fwGroundY, fwX, sideShellShiftPx, fwGroundY - burstY)}" fill="none" stroke="#333" stroke-width="1"/>`);
                 parts.push(`<text x="${(fwX + 12).toFixed(1)}" y="${((burstY + fwGroundY) / 2).toFixed(1)}" font-size="13" fill="#333" dominant-baseline="middle">打上げ高さ：${fireworkAlt.toFixed(0)}m</text>`);
             }
             parts.push(`<text x="${(fwX + 12).toFixed(1)}" y="${(fwGroundY + 19).toFixed(1)}" font-size="13" font-weight="bold" fill="#8a5b2d">筒場1 標高${launchGroundElev.toFixed(1)}m</text>`);
@@ -1199,13 +1203,13 @@
             // 花火の光跡
             const rayCount = 24;
             if(isFanView) {
-                parts.push(getFanSvgMarkup(fwX, fwGroundY, representative.fanLength * scaleY, representative.fanSpread, representative.lineWidth, 13, representative.color, sideWindDrift * scaleY, sideWindSag * scaleY));
+                parts.push(getFanSvgMarkup(burstX, fwGroundY, representative.fanLength * scaleY, representative.fanSpread, representative.lineWidth, 13, representative.color, sideWindDrift * scaleY, sideWindSag * scaleY));
             } else if(representative.pattern==='senshoku-senrin') {
-                parts.push(fireworkRealMode?getSenrinSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,12,40,representative.color,sideWindDrift * scaleY,sideWindSag * scaleY):getSenrinWireframeSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,12,representative.color));
+                parts.push(fireworkRealMode?getSenrinSvgMarkup(burstX,burstY,burstRpx,representative.lineWidth,12,40,representative.color,sideWindDrift * scaleY,sideWindSag * scaleY):getSenrinWireframeSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,12,representative.color));
             } else if(fireworkRealMode && representative.pattern==='starmine2') {
-                parts.push(getStarmine2SvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,200,representative.color,representative.starmineLength,sideWindDrift * scaleY,sideWindSag * scaleY));
+                parts.push(getStarmine2SvgMarkup(burstX,burstY,burstRpx,representative.lineWidth,200,representative.color,representative.starmineLength,sideWindDrift * scaleY,sideWindSag * scaleY));
             } else if(fireworkRealMode) {
-                parts.push(getStarmineSvgMarkup(fwX,burstY,burstRpx,representative.lineWidth,54,representative.color,representative.starmineLength,sideWindDrift * scaleY,sideWindSag * scaleY));
+                parts.push(getStarmineSvgMarkup(burstX,burstY,burstRpx,representative.lineWidth,54,representative.color,representative.starmineLength,sideWindDrift * scaleY,sideWindSag * scaleY));
             } else for (let i = 0; i < rayCount; i++) {
                 const angle = (i / rayCount) * Math.PI * 2;
                 const len = burstRpx * (i % 2 === 0 ? 1 : 0.6);
@@ -1346,6 +1350,60 @@
         function getFanHalfWidth(length,spread){return Math.sin(normalizeFanSpread(spread)*Math.PI/360)*normalizeFanLength(length);}
         // driftX / driftY は「燃え終わりまでに流される距離(m)」。時間の1.8乗で効かせる。
         function getWindOffset(drift, t) { return (drift || 0) * Math.pow(t, 1.8); }
+
+        // 【追加 v3.7.7】打ち上がっている最中の風
+        // 玉は真上に打ち出されるが、開花するまでの数秒間ずっと風を受けている。
+        // しかも上昇中は秒速100m近い猛烈な向かい風の中なので、横向きの力も大きく働く。
+        // その結果、打上げ線はカーブし、開花する位置そのものが風下へずれる。
+        // 高い（＝大きい）玉ほど上がっている時間が長いので、ずれもカーブも大きくなる。
+        const SHELL_RISE_GRAVITY = 26.5;   // 空気抵抗込みの見かけの重力加速度。10号=5.0秒、20号=7.0秒になる値
+        const SHELL_WIND_EFFICIENCY = .45; // 玉は星ほど素直には流されない
+        function getShellRiseSeconds(altitudeMeters) {
+            return Math.sqrt(Math.max(0, (parseFloat(altitudeMeters) || 0) * 2 / SHELL_RISE_GRAVITY));
+        }
+        // 上がっている途中(t)までに、玉が風下へずれている割合。
+        //   ・玉は下から勢いよく（秒速100m近く）上がり、上に行くほど減速して開花点で速度ゼロになる
+        //   ・横へ押す力は「向かい風の強さ×横風」なので、上昇が速い下のほうが力は大きい
+        //   ・ただし玉は重いので、力が大きくても横の速度はまだ乗っていない
+        //   ・むしろ上のほうでゆっくりになってからのほうが、同じ高さに長くとどまる＝長く押される
+        //   この2つを積分すると 1.5t^2 - 0.5t^3 になる。
+        //   結果、下から上がる間はほぼ真っすぐで、速度が落ちる上のほうで曲がる。
+        function getShellWindOffset(drift, t) { return (drift || 0) * (1.5 * t * t - 0.5 * t * t * t); }
+
+        // 開花点が風下へずれる距離(m)。扇形花火は玉が上がらないのでずれない。
+        function getShellWindDriftMeters(item) {
+            if (normalizeFireworkPattern(item?.pattern) === 'fan') return 0;
+            return normalizeWindSpeed(windSpeed) * getShellRiseSeconds(getStoredAltitude(item)) * SHELL_WIND_EFFICIENCY;
+        }
+        // 打上げ線のSVGパス。tubeX/groundYが筒口、baseXが風がないときの開花点、
+        // windShiftが風で横へずれる量(px)、heightPxが開花高さ(px)。
+        // 横は「筒の傾き（一定の割合）」＋「風（だんだん効く）」、高さは上がるほど減速する。
+        function getLaunchPathMarkup(tubeX, groundY, baseX, windShift, heightPx, steps = 20) {
+            let commands = '';
+            for (let step = 0; step <= steps; step++) {
+                const t = step / steps;
+                const px = tubeX + (baseX - tubeX) * t + getShellWindOffset(windShift, t);
+                const py = groundY - heightPx * (2 * t - t * t);
+                commands += `${step ? 'L' : 'M'} ${px.toFixed(1)} ${py.toFixed(1)} `;
+            }
+            return commands.trim();
+        }
+        // 真上から見た打上げ線。筒から開花点へ向かいながら風下へふくらむ。
+        function getLaunchPathLatLngs(origin, baseCenter, shellDrift, steps = 16) {
+            if (!shellDrift) return [origin, baseCenter];
+            const bearing = normalizeWindBearing(windBearing);
+            return Array.from({length:steps + 1}, (_, step) => {
+                const t = step / steps;
+                const lat = origin.lat + (baseCenter.lat - origin.lat) * t;
+                const lng = origin.lng + (baseCenter.lng - origin.lng) * t;
+                return destinationLatLng(lat, lng, bearing, getShellWindOffset(shellDrift, t));
+            });
+        }
+        // 風で流されたあとの開花点
+        function getDriftedBurstLatLng(baseCenter, item) {
+            const drift = getShellWindDriftMeters(item);
+            return drift ? destinationLatLng(baseCenter.lat, baseCenter.lng, normalizeWindBearing(windBearing), drift) : baseCenter;
+        }
         function getWindSagOffset(sag, t) { return (sag || 0) * t * t; }
 
         function getFanTrailGeometry(length=180,spread=90,count=13,pointCount=10,driftX=0,driftY=0,sagDrop=0){
@@ -1663,7 +1721,8 @@
             const lineWidth=clampLineWidth(item.lineWidth);
             const trailRadius=Math.max(.25,Math.min(3.2,.35+lineWidth*.18));
             const trajectoryRadius=Math.max(.22,Math.min(1.5,.22+lineWidth*.11));
-            const localPoint=point=>({x:xOffset+point.x,y:point.y,z:altitude+point.z});
+            // 【追加 v3.7.7】上がっている間に風で流される分。モデルは筒場の向きに回るので台の軸基準に分解する
+            const shellDriftTotal=getShellWindDriftMeters(item);
             // モデルは筒場の向きに回転して置かれるので、風も台の軸基準に分解する
             const modelAngle=(parseFloat(metadata.siteAngle)||0)*Math.PI/180;
             const modelWindUnit=getWindUnitVector();
@@ -1671,12 +1730,16 @@
             const modelDriftX=modelDrift*(Math.cos(modelAngle)*modelWindUnit.east-Math.sin(modelAngle)*modelWindUnit.north);
             const modelDriftY=modelDrift*(Math.sin(modelAngle)*modelWindUnit.east+Math.cos(modelAngle)*modelWindUnit.north);
             const modelSag=getWindSagMeters(item);
+            const shellDriftX=shellDriftTotal*(Math.cos(modelAngle)*modelWindUnit.east-Math.sin(modelAngle)*modelWindUnit.north);
+            const shellDriftY=shellDriftTotal*(Math.sin(modelAngle)*modelWindUnit.east+Math.cos(modelAngle)*modelWindUnit.north);
+            const burstX=xOffset+shellDriftX, burstY=shellDriftY;
+            const localPoint=point=>({x:burstX+point.x,y:burstY+point.y,z:altitude+point.z});
 
             // 専用KMZでは、花火設定の表示ON/OFFに関係なく打上げ線を含める。
             if(pattern!=='fan') {
                 const trajectory=Array.from({length:33},(_,index)=>{
                     const t=index/32;
-                    return {x:xOffset*t,y:0,z:altitude*(2*t-t*t)};
+                    return {x:xOffset*t+getShellWindOffset(shellDriftX,t),y:getShellWindOffset(shellDriftY,t),z:altitude*(2*t-t*t)};
                 });
                 builder.addTubePath(trajectory,trajectoryRadius,'#ffffff');
             }
@@ -1684,7 +1747,7 @@
             if(pattern==='fan') {
                 const palette=getFireworkCssPalette(item.color);
                 getFanTrailGeometry(item.fanLength,item.fanSpread,13,10,modelDriftX,modelDriftY,modelSag).forEach(trail=>{
-                    const points=trail.points.map(point=>({x:xOffset+point.x,y:point.y,z:Math.max(0,point.z)}));
+                    const points=trail.points.map(point=>({x:xOffset+point.x,y:point.y,z:Math.max(0,point.z)}));  // 扇形は玉が上がらないので風のずれなし
                     builder.addTubePath(points,trailRadius,palette[trail.colorIndex%palette.length]);
                 });
             } else if(pattern==='senshoku-senrin'&&fireworkRealMode) {
@@ -1701,14 +1764,14 @@
                         for(let angle=0;angle<=360;angle+=20) {
                             const radians=angle*Math.PI/180;
                             points.push({
-                                x:xOffset+child.x+child.radius*Math.sin(radians)*Math.cos(phiRad),
-                                y:child.y+child.radius*Math.sin(radians)*Math.sin(phiRad),
+                                x:burstX+child.x+child.radius*Math.sin(radians)*Math.cos(phiRad),
+                                y:burstY+child.y+child.radius*Math.sin(radians)*Math.sin(phiRad),
                                 z:altitude+child.z+child.radius*Math.cos(radians)
                             });
                         }
                         builder.addTubePath(points,trailRadius,color);
                     }
-                    builder.addOctahedron({x:xOffset+child.x,y:child.y,z:altitude+child.z},Math.max(.7,trailRadius*1.45),color);
+                    builder.addOctahedron({x:burstX+child.x,y:burstY+child.y,z:altitude+child.z},Math.max(.7,trailRadius*1.45),color);
                 });
             } else if(pattern==='starmine2'&&fireworkRealMode) {
                 const palettes=getStarmine2Palettes(item.color);
@@ -1718,7 +1781,7 @@
                     builder.addTubePath(inner,trailRadius*.78,palettes.innerCss);
                     builder.addTubePath(outer,trailRadius,palettes.outerCss[trail.colorIndex%palettes.outerCss.length]);
                 });
-                builder.addOctahedron({x:xOffset,y:0,z:altitude},Math.max(1.4,trailRadius*2.4),'#fffbe6');
+                builder.addOctahedron({x:burstX,y:burstY,z:altitude},Math.max(1.4,trailRadius*2.4),'#fffbe6');
             } else if(fireworkRealMode) {
                 const palettes=getStarmineCssPalettes(item.color);
                 getStarmineTrailGeometry(burstRadius,72,9,item.starmineLength,modelDriftX,modelDriftY,modelSag).forEach(trail=>{
@@ -1727,18 +1790,18 @@
                     builder.addTubePath(points.slice(0,split+1),trailRadius*.78,palettes.base[trail.baseColorIndex%palettes.base.length]);
                     builder.addTubePath(points.slice(split),trailRadius,palettes.tip[trail.tipColorIndex%palettes.tip.length]);
                 });
-                builder.addOctahedron({x:xOffset,y:0,z:altitude},Math.max(1.2,trailRadius*2.2),'#fff8cf');
+                builder.addOctahedron({x:burstX,y:burstY,z:altitude},Math.max(1.2,trailRadius*2.2),'#fff8cf');
             } else {
                 const color=getFireworkCssColor(item.color);
                 for(let phi=0;phi<180;phi+=30) {
                     const phiRad=phi*Math.PI/180,points=[];
                     for(let angle=0;angle<=360;angle+=10) {
                         const radians=angle*Math.PI/180;
-                        points.push({x:xOffset+burstRadius*Math.sin(radians)*Math.cos(phiRad),y:burstRadius*Math.sin(radians)*Math.sin(phiRad),z:altitude+burstRadius*Math.cos(radians)});
+                        points.push({x:burstX+burstRadius*Math.sin(radians)*Math.cos(phiRad),y:burstY+burstRadius*Math.sin(radians)*Math.sin(phiRad),z:altitude+burstRadius*Math.cos(radians)});
                     }
                     builder.addTubePath(points,trailRadius,color);
                 }
-                builder.addOctahedron({x:xOffset,y:0,z:altitude},Math.max(1.2,trailRadius*2.2),'#fff8cf');
+                builder.addOctahedron({x:burstX,y:burstY,z:altitude},Math.max(1.2,trailRadius*2.2),'#fff8cf');
             }
 
             return builder.build(metadata.modelName,{
@@ -2021,9 +2084,11 @@
                     layers.push(L.marker(standCenter, {interactive:false, icon:L.divIcon({className:'launch-marker-label', html:escapeMarkup(getStandDisplayName(siteIndex, standIndex)), iconSize:[52,20], iconAnchor:[26,-6]})}));
                 });
                 config.fireworks.forEach((item, index) => {
-                    const center = getGroupOffsetLatLng(origin, parseFloat(item.xOffset)||0, config.angle);
+                    // 【変更 v3.7.7】玉は上がっている数秒で風に流されるので、開花点そのものが風下へずれる
+                    const baseCenter = getGroupOffsetLatLng(origin, parseFloat(item.xOffset)||0, config.angle);
+                    const center = getDriftedBurstLatLng(baseCenter, item);
                     const color = getFireworkCssColor(item.color);
-                    if(item.showTrajectory!==false) layers.push(L.polyline([origin, center], {color:'#fff', weight:2, opacity:.9}));
+                    if(item.showTrajectory!==false) layers.push(L.polyline(getLaunchPathLatLngs(origin, baseCenter, getShellWindDriftMeters(item)), {color:'#fff', weight:2, opacity:.9}));
                     const selected = String(selectedLaunchSiteId) === String(site.id);
                     const pattern = normalizeFireworkPattern(item.pattern);
                     if (pattern === 'fan') {
@@ -2703,7 +2768,7 @@
                     return;
                 }
                 const r = getFireworkRadius(fw.size);
-                maxSide = Math.max(maxSide, Math.abs(absX) + r + 30);
+                maxSide = Math.max(maxSide, Math.abs(absX) + r + 30 + Math.abs(getShellWindDriftMeters(fw)));
                 maxTop = Math.max(maxTop, fw.altitude + r + 30);
             });
             return Math.min(450 / maxSide, 500 / maxTop);
@@ -2749,7 +2814,10 @@
             if (!multiFireworks.length) parts.push('<text x="500" y="300" text-anchor="middle" fill="#ddd" font-size="22">上の「＋花火を追加」から花火を追加してください</text>');
             multiFireworks.forEach((fw, index) => {
                 const standX = originX + getStandXOffset(getFireworkStandId(fw)) * scale;
-                const x = originX + getFireworkAbsoluteX(fw) * scale;
+                // 【追加 v3.7.7】上がっている間に風で流される分だけ、開花点が横へずれる
+                const shellShiftPx = getShellWindDriftMeters(fw) * editorWindComponent * scale;
+                const baseX = originX + getFireworkAbsoluteX(fw) * scale;
+                const x = baseX + shellShiftPx;
                 const selected = multiDrag?.id === fw.id || selectedMultiId === fw.id;
                 // 扇形花火は玉が開かないので、打上軌道も開花円も描かず地面から扇を立ち上げる
                 if (normalizeFireworkPattern(fw.pattern) === 'fan') {
@@ -2766,9 +2834,7 @@
                 const y = groundY - fw.altitude * scale;
                 const radius = Math.max(10, getFireworkRadius(fw.size) * scale);
                 const color = getFireworkCssColor(fw.color);
-                const controlX = standX + (x - standX) * 0.42;
-                const controlY = Math.min(groundY - 110, y + (groundY - y) * 0.25);
-                if(fw.showTrajectory!==false) parts.push(`<path d="M ${standX.toFixed(1)} ${groundY} Q ${controlX.toFixed(1)} ${controlY.toFixed(1)} ${x.toFixed(1)} ${y.toFixed(1)}" fill="none" stroke="#fff" stroke-width="2" opacity=".92"/>`);
+                if(fw.showTrajectory!==false) parts.push(`<path d="${getLaunchPathMarkup(standX, groundY, baseX, shellShiftPx, groundY - y)}" fill="none" stroke="#fff" stroke-width="2" opacity=".92"/>`);
                 parts.push(`<g data-fw-id="${fw.id}" style="cursor:grab;" pointer-events="all">`);
                 parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${radius.toFixed(1)}" fill="${color}" fill-opacity="${fireworkRealMode||normalizeFireworkPattern(fw.pattern)==='senshoku-senrin'?'0':'.08'}" stroke="${selected?'#ffb000':color}" stroke-opacity="${fireworkRealMode?(selected?'.65':'0'):(normalizeFireworkPattern(fw.pattern)==='senshoku-senrin'?(selected?'.65':'0'):'1')}" stroke-width="${selected ? 5 : 3}"/>`);
                 if(normalizeFireworkPattern(fw.pattern)==='senshoku-senrin') {
@@ -2820,11 +2886,14 @@
             const fw = multiFireworks.find(item => item.id === multiDrag.id);
             if (!fw) return;
             // 左右は「乗っている台からの距離」として持つので、台の位置を引く
-            fw.xOffset = Math.round(((px - 500) / scale - getStandXOffset(getFireworkStandId(fw))) * 2) / 2;
             // 扇形花火は地面から立ち上がるので、上下には動かさない
             if (normalizeFireworkPattern(fw.pattern) !== 'fan') {
                 fw.altitude = Math.max(getFireworkRadius(fw.size), Math.round(((570 - py) / scale) * 2) / 2);
             }
+            // 【変更 v3.7.7】掴んでいるのは風で流されたあとの開花点なので、
+            // 筒の位置に戻すために流された分を引いてから記録する
+            const dragShift = getShellWindDriftMeters(fw) * getWindComponentAlongStandAxis(groupAngle);
+            fw.xOffset = Math.round(((px - 500) / scale - getStandXOffset(getFireworkStandId(fw)) - dragShift) * 2) / 2;
             fw.positionAdjusted = true;
             syncEditingSiteConfig();
             renderMultiEditor();
@@ -4037,7 +4106,10 @@
                 config.fireworks.forEach((item,itemIndex) => {
                     const size = parseFloat(item.size)||4;
                     const xOffset = parseFloat(item.xOffset)||0;
-                    const burstLL = getGroupOffsetLatLng(origin,xOffset,config.angle);
+                    const baseBurstLL = getGroupOffsetLatLng(origin,xOffset,config.angle);
+                    // 【追加 v3.7.7】風で流されたあとの開花点を描く（奥行きのずれも自動で反映される）
+                    const burstLL = getDriftedBurstLatLng(baseBurstLL,item);
+                    const baseProjection = projectPoint(baseBurstLL);
                     const burstProjection = projectPoint(burstLL);
                     const pattern = normalizeFireworkPattern(item.pattern);
                     const isFan = pattern === 'fan';
@@ -4049,6 +4121,7 @@
                         tubeX:tubeProjection.x,
                         tubeDepth:tubeProjection.depth,
                         x:burstProjection.x,
+                        baseX:baseProjection.x,
                         depth:burstProjection.depth,
                         perspective:burstProjection.perspective,
                         altitude,
@@ -4148,8 +4221,8 @@
                     parts.push(`<text x="${ex.toFixed(1)}" y="${(toY(b.fanLength)-6).toFixed(1)}" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">扇形花火 ${b.fanLength.toFixed(0)}m</text></g>`);
                     return;
                 }
-                const cx=sx+(ex-sx)*.42, cy=ey+(sy-ey)*.25;
-                if(b.showTrajectory!==false) parts.push(`<path d="M ${sx.toFixed(1)} ${sy.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}" fill="none" stroke="#fff" stroke-width="2" opacity="${opacity.toFixed(2)}"/>`);
+                const windShiftPx=ex-toX(b.baseX);
+                if(b.showTrajectory!==false) parts.push(`<path d="${getLaunchPathMarkup(sx,sy,ex-windShiftPx,windShiftPx,sy-ey)}" fill="none" stroke="#fff" stroke-width="2" opacity="${opacity.toFixed(2)}"/>`);
                 const r=Math.max(3,b.radius*scale);
                 parts.push(`<g opacity="${opacity.toFixed(2)}"><circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="${r.toFixed(1)}" fill="${b.color}" fill-opacity="${fireworkRealMode||b.pattern==='senshoku-senrin'?'0':'.08'}" stroke="${b.color}" stroke-opacity="${fireworkRealMode||b.pattern==='senshoku-senrin'?'0':'1'}" stroke-width="${Math.max(1,b.lineWidth).toFixed(1)}"/>`);
                 const burstDrift=b.windDrift*previewWindComponent*scale;
@@ -4338,8 +4411,13 @@
                 const altitude = item.altitude ?? getDefaultFireworkAltitude(item.size);
                 // 地図表示と同じく、筒場の角度だけで向きを決める（カメラ位置には依存しない）
                 const lateralBearing = (parseFloat(siteAngle) || 0) * Math.PI / 180;
-                const centerLon = origin.lng + Math.cos(lateralBearing) * xOffset / (111320 * Math.cos(origin.lat * Math.PI / 180));
-                const centerLat = origin.lat - Math.sin(lateralBearing) * xOffset / 111320;
+                // 【追加 v3.7.7】上がっている間に風で流される分だけ、開花点が風下へずれる
+                const shellWindUnit = getWindUnitVector();
+                const shellDriftMeters = getShellWindDriftMeters(item);
+                const shellDriftEast = shellDriftMeters * shellWindUnit.east;
+                const shellDriftNorth = shellDriftMeters * shellWindUnit.north;
+                const centerLon = origin.lng + (Math.cos(lateralBearing) * xOffset + shellDriftEast) / (111320 * Math.cos(origin.lat * Math.PI / 180));
+                const centerLat = origin.lat + (-Math.sin(lateralBearing) * xOffset + shellDriftNorth) / 111320;
                 const styleId = `sFw${styleCounter++}`;
                 const pattern=normalizeFireworkPattern(item.pattern);
                 fireworkStyles += `<Style id="${styleId}"><LineStyle><color>${getFireworkKmlColor(item.color)}</color><width>${item.lineWidth}</width></LineStyle></Style>`;
@@ -4461,8 +4539,8 @@
                     const t = step / 32;
                     const horizontal = xOffset * t;
                     const curvedAlt = altitude * (2*t - t*t);
-                    const lon = origin.lng + Math.cos(lateralBearing) * horizontal / (111320*Math.cos(origin.lat*Math.PI/180));
-                    const lat = origin.lat - Math.sin(lateralBearing) * horizontal / 111320;
+                    const lon = origin.lng + (Math.cos(lateralBearing) * horizontal + getShellWindOffset(shellDriftEast, t)) / (111320*Math.cos(origin.lat*Math.PI/180));
+                    const lat = origin.lat + (-Math.sin(lateralBearing) * horizontal + getShellWindOffset(shellDriftNorth, t)) / 111320;
                     trajectory += `${lon},${lat},${originElev+curvedAlt} `;
                 }
                 // 【変更 v3.4.8】スターマインの打上げ線は常に白で固定（リアルモードでも金色にしない）。
@@ -4512,7 +4590,7 @@
                     config.fireworks.forEach((item,itemIndex)=>{
                         const modelName=`${item.standName || siteName} 花火${itemIndex+1} ${getFireworkPatternLabel(item.pattern)}`;
                         const modelPath=`models/launch_${String(siteIndex+1).padStart(2,'0')}_firework_${String(itemIndex+1).padStart(3,'0')}.dae`;
-                        const fireworkPosition=getGroupOffsetLatLng(origin,parseFloat(item.xOffset)||0,config.angle);
+                        const fireworkPosition=getDriftedBurstLatLng(getGroupOffsetLatLng(origin,parseFloat(item.xOffset)||0,config.angle),item);
                         const isFan=normalizeFireworkPattern(item.pattern)==='fan';
                         const centerElevation=originElev+(isFan?0:getStoredAltitude(item));
                         const dae=buildFireworkDae(item,{
