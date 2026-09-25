@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>花火＆撮影シミュレーター (Ver 3.5.6)</title>
+    <title>花火＆撮影シミュレーター (Ver 3.6.0)</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -83,6 +83,10 @@
         .fw-list-item small { margin-left:7px;font-size:11px;font-weight:600;color:#cfc7de; }
         .fw-list-item.active { border-color:#ffb000;background:rgba(120,84,20,.95);box-shadow:0 0 0 2px rgba(255,176,0,.45); }
         .fw-list-item.active small { color:#ffe6b0; }
+        .fw-stand-head { display:block;width:248px;margin:6px 0 0;padding:6px 12px;text-align:left;border:1px solid rgba(255,255,255,.18);border-radius:9px;background:rgba(58,52,78,.94);color:#cfc7de;font-size:12px;font-weight:800;cursor:pointer; }
+        .fw-stand-head small { margin-left:7px;font-size:10.5px;font-weight:600;color:#a79ec0; }
+        .fw-stand-head.active { border-color:#ffb000;background:rgba(120,84,20,.95);color:#ffd479; }
+        .fw-stand-head.active small { color:#ffe6b0; }
         .fw-list-empty { padding:6px 4px;color:#cfc7de;font-size:12px; }
         #multiEditorTitle { font-size:17px; }
         #multiEditorToolbar { display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:8px 0 6px; }
@@ -90,7 +94,9 @@
         #multiEditorToolbar select { max-width:210px;flex:0 1 auto; }
         #multiEditorToolbar .tool-stack { display:flex;flex-direction:column;gap:6px;align-self:stretch; }
         #editFireworkBtn { background:#6f42c1;color:#fff; }
-        #editFireworkBtn:disabled { background:#5b5568;color:#9a94a8;cursor:not-allowed;transform:none;box-shadow:none; }
+        #addStandBtn { background:#2f9e7a;color:#fff; }
+        #deleteStandBtn { background:#a8475c;color:#fff; }
+        #editFireworkBtn:disabled, #deleteStandBtn:disabled { background:#5b5568;color:#9a94a8;cursor:not-allowed;transform:none;box-shadow:none; }
         /* 筒場を選ぶボタン（2.花火を作る） */
         .launch-pick-btn { flex:0 0 auto;min-width:96px;padding:8px 14px;line-height:1.25; }
         .launch-pick-btn small { display:block;margin-top:2px;font-size:10px;font-weight:600;color:#998ba5; }
@@ -210,7 +216,7 @@
     </style>
 </head>
 <body>
-    <h1>花火＆撮影シミュレーター (Ver 3.5.6)</h1>
+    <h1>花火＆撮影シミュレーター (Ver 3.6.0)</h1>
     <div class="main-row">
         <div id="map"></div>
         <div id="launchRotationPanel">
@@ -234,6 +240,10 @@
                 <div class="tool-stack">
                     <button type="button" id="addFireworkBtn" style="background:#ff8c00;color:#fff;" onclick="openFireworkDialog(null)">＋花火を追加</button>
                     <button type="button" id="editFireworkBtn" onclick="openFireworkDialog(selectedMultiId)" disabled>編集</button>
+                </div>
+                <div class="tool-stack">
+                    <button type="button" id="addStandBtn" title="筒場の左右に打上台（台船）を増やします" onclick="addStand()">＋台を追加</button>
+                    <button type="button" id="deleteStandBtn" onclick="deleteSelectedStand()" disabled>台を削除</button>
                 </div>
                 <select id="groupTemplateSelect" title="登録済みの花火グループ"></select>
                 <button type="button" style="background:#17a2b8;color:#fff;" onclick="loadGroupTemplate()">呼び出す</button>
@@ -437,7 +447,7 @@
     </div>
 
     <script>
-        const VERSION = "3.5.6";
+        const VERSION = "3.6.0";
         const map = L.map('map', { center: [34.87438, 134.69885], zoom: 13 });
         const standardLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
         const aerialLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/{y}.jpg');
@@ -560,6 +570,9 @@
         // multiFireworks は「いま編集中の筒場の花火」を入れておく作業用バッファで、
         // 変更のたびに syncEditingSiteConfig() で筒場側(config.fireworks)へ書き戻す。
         let multiFireworks = [];
+        // 【追加 v3.6】編集中の筒場の台の並び。[{id, xOffset}] で台1は必ず xOffset 0。
+        let multiStands = [{id:1, xOffset:0}];
+        let selectedStandId = 1;
         let groupAngle = 0;
         // 【追加 v3.4】花火追加ポップアップの初期値として、最後に使った内容を覚えておく
         let lastFireworkSpec = {
@@ -1602,13 +1615,57 @@
             );
         }
 
+        // ===== 台（v3.6）=====
+        // 筒場の中に「台」を横一列に並べられるようにした。台1は筒場の位置そのもの（左右0で固定）、
+        // 台2以降が筒場から左右に離れた打上台。海上なら台船、陸上なら打上台のこと。
+        // 花火は今までどおり1つの配列に平らに持ち、どの台に乗っているかは standId で示す。
+        // こうすると地図・2D・KMLなど既存の描画は「左右距離が絶対値になった花火の配列」を
+        // 見るだけで済み、台の概念を全部に配らなくてよい。
+        function normalizeStands(config) {
+            const raw = Array.isArray(config?.stands) ? config.stands : [];
+            const stands = raw.map((stand, index) => ({
+                id: stand?.id != null ? stand.id : index + 1,
+                xOffset: index === 0 ? 0 : (parseFloat(stand?.xOffset) || 0)
+            }));
+            if (!stands.length) stands.push({id:1, xOffset:0});
+            return stands;
+        }
+
+        // 台1は筒場そのものなので「筒場N」、台2以降は通し番号で「台2」「台3」…
+        function getStandDisplayName(siteIndex, standIndex) {
+            return standIndex === 0 ? `筒場${siteIndex + 1}` : `台${standIndex + 1}`;
+        }
+
+        function cloneStands(stands) {
+            return normalizeStands({stands}).map(stand => ({id:stand.id, xOffset:stand.xOffset}));
+        }
+
         // 【変更 v3.4】筒場の花火は site.config だけを見る。構成名は廃止し、表示名は常に「筒場N」。
+        // 【変更 v3.6】返す fireworks の xOffset は「筒場からの絶対距離」（台の位置＋台内での位置）。
         function getSiteGroupConfiguration(site) {
             const index = getAllLaunchSites().findIndex(item => String(item.id) === String(site?.id));
-            const name = `筒場${index >= 0 ? index + 1 : 1}`;
+            const siteIndex = index >= 0 ? index : 0;
+            const name = `筒場${siteIndex + 1}`;
             const config = site?.config;
-            if (!config || !Array.isArray(config.fireworks)) return {name, angle:parseFloat(config?.groupAngle)||0, fireworks:[]};
-            return {name, angle:parseFloat(config.groupAngle)||0, fireworks:config.fireworks};
+            const angle = parseFloat(config?.groupAngle) || 0;
+            const stands = normalizeStands(config);
+            const rawFireworks = Array.isArray(config?.fireworks) ? config.fireworks : [];
+            const knownIds = new Set(stands.map(stand => String(stand.id)));
+            const fireworks = [];
+            stands.forEach((stand, standIndex) => {
+                rawFireworks.forEach(fw => {
+                    const owner = knownIds.has(String(fw?.standId)) ? String(fw.standId) : String(stands[0].id);
+                    if (owner !== String(stand.id)) return;
+                    fireworks.push({
+                        ...fw,
+                        xOffset:(parseFloat(stand.xOffset) || 0) + (parseFloat(fw?.xOffset) || 0),
+                        standId:stand.id,
+                        standIndex,
+                        standName:getStandDisplayName(siteIndex, standIndex)
+                    });
+                });
+            });
+            return {name, siteIndex, angle, stands, fireworks};
         }
 
         // 【追加 v3.4】筒場に花火の入れ物(config)が無ければ作って返す
@@ -1618,9 +1675,12 @@
             if (!site.config || !Array.isArray(site.config.fireworks)) {
                 // 初期値だけはカメラから見て左右に並ぶ向きにしておく（作った時の1回だけ）
                 const initialAngle = parseFloat(site.config?.groupAngle) || parseFloat(site.angle) || getCameraFacingLaunchAngle(site.marker.getLatLng());
-                setSiteConfig(id, {groupAngle:initialAngle, fireworks:[]});
+                setSiteConfig(id, {groupAngle:initialAngle, stands:[{id:1, xOffset:0}], fireworks:[]});
             }
-            return getLaunchSiteById(id)?.config || null;
+            const config = getLaunchSiteById(id)?.config || null;
+            // v3.5以前のデータには台が無いので、全部を台1（＝筒場の位置）に入れる
+            if (config && !Array.isArray(config.stands)) config.stands = normalizeStands(config);
+            return config;
         }
 
         function getSelectedLaunchSite() {
@@ -1723,6 +1783,13 @@
                 const axisStart = getGroupOffsetLatLng(origin, -maxExtent, config.angle);
                 const axisEnd = getGroupOffsetLatLng(origin, maxExtent, config.angle);
                 layers.push(L.polyline([axisStart, origin, axisEnd], {color:'#fff', weight:2, dashArray:'6,6', opacity:.9}));
+                // 台2以降は筒場から離れた実在の打上台なので、地図にも位置を出す
+                config.stands.forEach((stand, standIndex) => {
+                    if (standIndex === 0) return;
+                    const standCenter = getGroupOffsetLatLng(origin, parseFloat(stand.xOffset) || 0, config.angle);
+                    layers.push(L.circleMarker(standCenter, {radius:6, color:'#fff', weight:2, fillColor:'#ff5a5a', fillOpacity:1, interactive:false}));
+                    layers.push(L.marker(standCenter, {interactive:false, icon:L.divIcon({className:'launch-marker-label', html:escapeMarkup(getStandDisplayName(siteIndex, standIndex)), iconSize:[52,20], iconAnchor:[26,-6]})}));
+                });
                 config.fireworks.forEach((item, index) => {
                     const center = getGroupOffsetLatLng(origin, parseFloat(item.xOffset)||0, config.angle);
                     const color = getFireworkCssColor(item.color);
@@ -1751,10 +1818,81 @@
                             layers.push(L.circle(childCenter,{radius:child.radius,color:childColor,weight:2,fillColor:childColor,fillOpacity:.18,interactive:false}));
                         });
                     }
-                    layers.push(L.marker(center, {interactive:false, icon:L.divIcon({className:'event-text-only', html:`筒場${siteIndex+1}-${index + 1}: ${getFireworkPatternLabel(item.pattern)} ${item.size}号`, iconSize:[150,20], iconAnchor:[75,10]})}));
+                    layers.push(L.marker(center, {interactive:false, icon:L.divIcon({className:'event-text-only', html:`${escapeMarkup(item.standName || (`筒場${siteIndex+1}`))}-${index + 1}: ${getFireworkPatternLabel(item.pattern)} ${item.size}号`, iconSize:[150,20], iconAnchor:[75,10]})}));
                 });
             });
             multiGroupLayer = L.layerGroup(layers).addTo(map);
+        }
+
+        // ============ 台の操作（v3.6） ============
+        function getEditingStand(id) {
+            return multiStands.find(stand => String(stand.id) === String(id)) || null;
+        }
+
+        function getEditingStandIndex(id) {
+            return multiStands.findIndex(stand => String(stand.id) === String(id));
+        }
+
+        // 花火がどの台に乗っているか。不明なら台1扱い。
+        function getFireworkStandId(fw) {
+            return getEditingStand(fw?.standId) ? fw.standId : multiStands[0].id;
+        }
+
+        function getStandXOffset(standId) {
+            return parseFloat(getEditingStand(standId)?.xOffset) || 0;
+        }
+
+        // 花火の「筒場からの絶対左右距離」
+        function getFireworkAbsoluteX(fw) {
+            return getStandXOffset(getFireworkStandId(fw)) + (parseFloat(fw?.xOffset) || 0);
+        }
+
+        function getEditingStandName(standId) {
+            const siteIndex = getAllLaunchSites().findIndex(item => String(item.id) === String(editingLaunchSiteId));
+            return getStandDisplayName(siteIndex >= 0 ? siteIndex : 0, Math.max(0, getEditingStandIndex(standId)));
+        }
+
+        function addStand() {
+            if (editingLaunchSiteId == null) return;
+            // 既にある台とぶつからないよう、左右へ交互に150mずつ離して置く
+            const used = multiStands.map(stand => parseFloat(stand.xOffset) || 0);
+            const step = 150;
+            let offset = step;
+            for (let attempt = 1; attempt <= 40; attempt++) {
+                const candidate = (attempt % 2 ? 1 : -1) * Math.ceil(attempt / 2) * step;
+                if (!used.some(value => Math.abs(value - candidate) < step * .5)) { offset = candidate; break; }
+            }
+            const stand = {id:Date.now() + Math.floor(Math.random() * 1000), xOffset:offset};
+            multiStands.push(stand);
+            selectedStandId = stand.id;
+            selectedMultiId = null;
+            syncEditingSiteConfig();
+            saveSettings();
+            renderMultiEditor();
+            refreshSimulation();
+        }
+
+        function deleteSelectedStand() {
+            const index = getEditingStandIndex(selectedStandId);
+            if (index <= 0) { alert('台1は筒場そのものなので削除できません。削除したい台を選んでください。'); return; }
+            const name = getEditingStandName(selectedStandId);
+            const count = multiFireworks.filter(fw => String(getFireworkStandId(fw)) === String(selectedStandId)).length;
+            if (!confirm(`${name}を削除します。${count ? `この台の花火${count}発も一緒に消えます。` : ''}よろしいですか？`)) return;
+            multiFireworks = multiFireworks.filter(fw => String(getFireworkStandId(fw)) !== String(selectedStandId));
+            multiStands = multiStands.filter(stand => String(stand.id) !== String(selectedStandId));
+            selectedStandId = multiStands[0].id;
+            selectedMultiId = null;
+            syncEditingSiteConfig();
+            saveSettings();
+            renderMultiEditor();
+            refreshSimulation();
+        }
+
+        function selectStand(id) {
+            if (!getEditingStand(id)) return;
+            selectedStandId = id;
+            selectedMultiId = null;
+            renderMultiEditor();
         }
 
         // ============ 花火の追加・編集ポップアップ（v3.4で新設） ============
@@ -1769,10 +1907,13 @@
                 // 追加のときは先に実物を1発置いてしまう。そうすると入力を変えるたびに
                 // 後ろの図がその場で変わるので、号数や扇の広がりを見ながら決められる。
                 const spec = {...lastFireworkSpec};
-                const sameCenterCount = multiFireworks.filter(item => Math.abs(parseFloat(item.xOffset) || 0) < .01).length;
+                // 選択中の台に乗せる。台の中で重ならないよう左右へ交互にずらす。
+                const standId = getEditingStand(selectedStandId) ? selectedStandId : multiStands[0].id;
+                const sameCenterCount = multiFireworks.filter(item => String(getFireworkStandId(item)) === String(standId) && Math.abs(parseFloat(item.xOffset) || 0) < .01).length;
                 target = {
                     id: Date.now() + Math.floor(Math.random() * 1000),
                     ...spec,
+                    standId,
                     xOffset: sameCenterCount ? (sameCenterCount % 2 ? -1 : 1) * Math.ceil(sameCenterCount / 2) * 35 : 0,
                     altitude: spec.pattern === 'fan' ? 0 : getDefaultFireworkAltitude(spec.size),
                     positionAdjusted: false
@@ -1789,6 +1930,7 @@
             fireworkRealModeBackup = fireworkRealMode;
             editingFireworkId = target.id;
             selectedMultiId = target.id;
+            selectedStandId = getFireworkStandId(target);
             const index = multiFireworks.findIndex(item => item.id === target.id);
             document.getElementById('fireworkDialogTitle').textContent = isNew ? '花火を追加' : `花火 ${index + 1}`;
             document.getElementById('dlgPattern').value = normalizeFireworkPattern(target.pattern);
@@ -1959,41 +2101,59 @@
         }
 
         // 【追加 v3.4.5】左上の「花火リスト」。行を選ぶと図の番号バッジが光り、「編集」が押せるようになる。
+        // 【変更 v3.6】台ごとに見出しを付けて並べる。見出しを押すとその台を選べる。
         function renderFireworkList() {
             const body = document.getElementById('fireworkListBody');
             if (!body) return;
-            if (!multiFireworks.length) {
-                body.innerHTML = '<div class="fw-list-empty">まだ花火がありません</div>';
-                return;
-            }
-            body.innerHTML = multiFireworks.map((fw, index) => {
-                const pattern = normalizeFireworkPattern(fw.pattern);
-                const title = pattern === 'fan' ? '扇形花火' : `${getFireworkPatternLabel(pattern)} ${fw.size}号`;
-                const spec = pattern === 'fan'
-                    ? `長さ${normalizeFanLength(fw.fanLength)}m / ${normalizeFanSpread(fw.fanSpread)}°`
-                    : `中心${Number(fw.altitude).toFixed(1)}m`;
-                return `<button type="button" class="fw-list-item${fw.id === selectedMultiId ? ' active' : ''}" onclick="selectFireworkFromList(${fw.id})">${index + 1}：${escapeMarkup(title)}<small>${escapeMarkup(spec)}</small></button>`;
+            const siteIndex = Math.max(0, getAllLaunchSites().findIndex(item => String(item.id) === String(editingLaunchSiteId)));
+            let counter = 0;
+            const blocks = multiStands.map((stand, standIndex) => {
+                const items = multiFireworks.filter(fw => String(getFireworkStandId(fw)) === String(stand.id));
+                const standName = getStandDisplayName(siteIndex, standIndex);
+                const position = standIndex === 0 ? '筒場の位置' : `左右${(parseFloat(stand.xOffset) || 0).toFixed(0)}m`;
+                const standActive = String(selectedStandId) === String(stand.id) && selectedMultiId == null;
+                const head = `<button type="button" class="fw-stand-head${standActive ? ' active' : ''}" onclick="selectStand('${stand.id}')">${escapeMarkup(standName)}<small>${escapeMarkup(position)}・${items.length}発</small></button>`;
+                const rows = items.map(fw => {
+                    counter += 1;
+                    const pattern = normalizeFireworkPattern(fw.pattern);
+                    const title = pattern === 'fan' ? '扇形花火' : `${getFireworkPatternLabel(pattern)} ${fw.size}号`;
+                    const spec = pattern === 'fan'
+                        ? `長さ${normalizeFanLength(fw.fanLength)}m / ${normalizeFanSpread(fw.fanSpread)}°`
+                        : `中心${Number(fw.altitude).toFixed(1)}m`;
+                    return `<button type="button" class="fw-list-item${fw.id === selectedMultiId ? ' active' : ''}" onclick="selectFireworkFromList(${fw.id})">${counter}：${escapeMarkup(title)}<small>${escapeMarkup(spec)}</small></button>`;
+                }).join('');
+                return head + (items.length ? rows : '<div class="fw-list-empty">この台には花火がありません</div>');
             }).join('');
+            body.innerHTML = blocks;
         }
 
         function selectFireworkFromList(id) {
             selectedMultiId = id;
+            const fw = multiFireworks.find(item => item.id === id);
+            if (fw) selectedStandId = getFireworkStandId(fw);
             renderMultiEditor();
         }
 
         // ツールバーの「編集」ボタンと、ヘッダーの案内文を選択状態に合わせる
         function updateEditorSelectionUI() {
             const button = document.getElementById('editFireworkBtn');
+            const standButton = document.getElementById('deleteStandBtn');
             const hint = document.getElementById('multiEditorHint');
             if (!button) return;
+            if (!getEditingStand(selectedStandId)) selectedStandId = multiStands[0].id;
             const index = multiFireworks.findIndex(item => item.id === selectedMultiId);
             const target = index >= 0 ? multiFireworks[index] : null;
             button.disabled = !target;
+            const standIndex = getEditingStandIndex(selectedStandId);
+            if (standButton) standButton.disabled = !(selectedMultiId == null && standIndex > 0);
             renderFireworkList();
             if (!hint) return;
+            const standName = getEditingStandName(selectedStandId);
             hint.textContent = target
-                ? `選択中：${index + 1}番目の${getFireworkPatternLabel(target.pattern)}　→「編集」で中身を変更／ドラッグで位置を調整`
-                : '花火をクリック（または左上の花火リスト）で選択 →「編集」で中身を変更、ドラッグで位置を調整';
+                ? `選択中：${standName}の${getFireworkPatternLabel(target.pattern)}　→「編集」で中身を変更／ドラッグで位置を調整`
+                : standIndex > 0
+                    ? `${standName}を選択中　→ 左右ドラッグで位置を調整／「＋花火を追加」でこの台に花火が乗ります`
+                    : `${standName}を選択中　→「＋花火を追加」でこの台に花火が乗ります。「＋台を追加」で左右に台を増やせます`;
         }
 
         function getGroupTemplates() {
@@ -2034,7 +2194,7 @@
             const box = document.getElementById('groupSaveExisting');
             if (!groupSaveNames.length) { box.innerHTML = '<div class="fw-note">登録済みのグループはまだありません。</div>'; return; }
             box.innerHTML = '<div class="fw-note">登録済み（名前を押すとその名前で上書きできます）</div>'
-                + groupSaveNames.map((name, index) => `<div class="group-row"><button type="button" class="group-pick" onclick="pickGroupSaveName(${index})">${escapeMarkup(name)}</button><span class="group-count">${templates[name].fireworks?.length || 0}発</span><button type="button" class="group-del" title="このグループを削除" onclick="deleteGroupTemplateByIndex(${index})">🗑</button></div>`).join('');
+                + groupSaveNames.map((name, index) => `<div class="group-row"><button type="button" class="group-pick" onclick="pickGroupSaveName(${index})">${escapeMarkup(name)}</button><span class="group-count">${(templates[name].stands?.length || 1) > 1 ? `台${templates[name].stands.length}・` : ''}${templates[name].fireworks?.length || 0}発</span><button type="button" class="group-del" title="このグループを削除" onclick="deleteGroupTemplateByIndex(${index})">🗑</button></div>`).join('');
         }
 
         function pickGroupSaveName(index) {
@@ -2060,7 +2220,9 @@
                 name,
                 groupAngle,
                 realMode: fireworkRealMode,
+                stands: multiStands.map((stand, index) => ({id:stand.id, xOffset:index === 0 ? 0 : (parseFloat(stand.xOffset) || 0)})),
                 fireworks: multiFireworks.map(fw => ({
+                    standId:getFireworkStandId(fw),
                     size:fw.size,
                     color:getFireworkColorKey(fw),
                     lineWidth:fw.lineWidth,
@@ -2089,9 +2251,12 @@
             if (!name) { alert('呼び出す花火グループを選択してください'); return; }
             const template = getGroupTemplates()[name];
             if (!template || !Array.isArray(template.fireworks)) { alert('保存データを読み込めませんでした'); return; }
-            if (multiFireworks.length && !confirm(`この筒場のいまの花火を、「${name}」の内容に置き換えますか？`)) return;
-            multiFireworks = cloneFireworks(template.fireworks);
+            if (multiFireworks.length && !confirm(`この筒場のいまの台と花火を、「${name}」の内容に置き換えますか？`)) return;
+            // 台ごと入れ替える。台が無い旧データは全部を台1に入れる。
+            multiStands = cloneStands(template.stands);
+            multiFireworks = cloneFireworks(template.fireworks).map(fw => ({...fw, standId:getEditingStand(fw.standId) ? fw.standId : multiStands[0].id}));
             selectedMultiId = null;
+            selectedStandId = multiStands[0].id;
             groupAngle = parseFloat(template.groupAngle) || 0;
             if (typeof template.realMode === 'boolean') fireworkRealMode = template.realMode;
             syncEditingSiteConfig();
@@ -2184,7 +2349,8 @@
                 fanSpread:normalizeFanSpread(fw.fanSpread),
                 xOffset:parseFloat(fw.xOffset)||0,
                 altitude:getStoredAltitude(fw),
-                positionAdjusted:!!fw.positionAdjusted
+                positionAdjusted:!!fw.positionAdjusted,
+                standId:fw.standId
             }));
         }
 
@@ -2210,7 +2376,9 @@
             const config = ensureSiteConfig(id);
             editingLaunchSiteId = id;
             selectedMultiId = null;
-            multiFireworks = cloneFireworks(config?.fireworks || []);
+            multiStands = cloneStands(config?.stands);
+            multiFireworks = cloneFireworks(config?.fireworks || []).map(fw => ({...fw, standId:getEditingStand(fw.standId) ? fw.standId : multiStands[0].id}));
+            selectedStandId = multiStands[0].id;
             groupAngle = parseFloat(config?.groupAngle) || 0;
             const index = getAllLaunchSites().findIndex(item => String(item.id) === String(id));
             document.getElementById('multiEditorTitle').textContent = `花火を編集（筒場${index + 1}）`;
@@ -2223,6 +2391,7 @@
             const config = ensureSiteConfig(editingLaunchSiteId);
             if (!config) return;
             config.groupAngle = groupAngle;
+            config.stands = cloneStands(multiStands);
             config.fireworks = cloneFireworks(multiFireworks);
         }
 
@@ -2285,6 +2454,8 @@
             document.getElementById('multiEditorPanel').style.display = 'none';
             editingLaunchSiteId = null;
             selectedMultiId = null;
+            multiStands = [{id:1, xOffset:0}];
+            selectedStandId = 1;
             multiDrag = null;
             saveSettings();
             refreshSimulation();
@@ -2292,15 +2463,17 @@
 
         function getMultiEditorScale() {
             let maxSide = 200, maxTop = 450;
+            multiStands.forEach(stand => { maxSide = Math.max(maxSide, Math.abs(parseFloat(stand.xOffset) || 0) + 60); });
             multiFireworks.forEach(fw => {
+                const absX = getFireworkAbsoluteX(fw);
                 if (normalizeFireworkPattern(fw.pattern) === 'fan') {
                     const length = normalizeFanLength(fw.fanLength);
-                    maxSide = Math.max(maxSide, Math.abs(fw.xOffset) + getFanHalfWidth(length, fw.fanSpread) + 30);
+                    maxSide = Math.max(maxSide, Math.abs(absX) + getFanHalfWidth(length, fw.fanSpread) + 30);
                     maxTop = Math.max(maxTop, length + 60);
                     return;
                 }
                 const r = getFireworkRadius(fw.size);
-                maxSide = Math.max(maxSide, Math.abs(fw.xOffset) + r + 30);
+                maxSide = Math.max(maxSide, Math.abs(absX) + r + 30);
                 maxTop = Math.max(maxTop, fw.altitude + r + 30);
             });
             return Math.min(450 / maxSide, 500 / maxTop);
@@ -2329,10 +2502,22 @@
                 guideParts.push(`<line x1="24" y1="${guideY.toFixed(1)}" x2="976" y2="${guideY.toFixed(1)}" stroke="#fff" stroke-opacity=".13" stroke-width="1" stroke-dasharray="7,8"/>`);
                 guideParts.push(`<text x="974" y="${(guideY - 7).toFixed(1)}" text-anchor="end" font-size="13" font-weight="bold" fill="#b6adc6">${size}号玉：${altitude}m</text>`);
             });
-            let parts = [...guideParts, `<line x1="30" y1="${groundY}" x2="970" y2="${groundY}" stroke="#bbb" stroke-width="2" stroke-dasharray="8,6"/>`, `<text x="500" y="603" text-anchor="middle" fill="#ddd" font-size="15">筒場（すべての花火の打上位置）</text>`, `<circle cx="${originX}" cy="${groundY}" r="7" fill="#fff"/>`];
+            let parts = [...guideParts, `<line x1="30" y1="${groundY}" x2="970" y2="${groundY}" stroke="#bbb" stroke-width="2" stroke-dasharray="8,6"/>`];
+            // 台（打上台／台船）を地面の線の上に並べる。台1は筒場そのものなので動かせない。
+            const editingSiteIndex = Math.max(0, getAllLaunchSites().findIndex(item => String(item.id) === String(editingLaunchSiteId)));
+            multiStands.forEach((stand, standIndex) => {
+                const sx = originX + (parseFloat(stand.xOffset) || 0) * scale;
+                const standSelected = String(selectedStandId) === String(stand.id) && selectedMultiId == null;
+                const isBase = standIndex === 0;
+                parts.push(`<g data-stand-id="${stand.id}" style="cursor:${isBase ? 'pointer' : 'grab'};" pointer-events="all">`);
+                parts.push(`<rect x="${(sx-48).toFixed(1)}" y="${(groundY-16).toFixed(1)}" width="96" height="48" rx="11" fill="#ffb000" fill-opacity="${standSelected ? '.16' : '0'}" stroke="${standSelected ? '#ffb000' : 'none'}" stroke-width="${standSelected ? 3 : 0}"/>`);
+                parts.push(`<circle cx="${sx.toFixed(1)}" cy="${groundY}" r="${isBase ? 7 : 6}" fill="${isBase ? '#fff' : '#ff5a5a'}" stroke="#252333" stroke-width="1"/>`);
+                parts.push(`<text x="${sx.toFixed(1)}" y="${groundY + 26}" text-anchor="middle" fill="${standSelected ? '#ffd479' : '#ddd'}" font-size="14" font-weight="${standSelected ? 'bold' : 'normal'}">${escapeMarkup(getStandDisplayName(editingSiteIndex, standIndex))}</text></g>`);
+            });
             if (!multiFireworks.length) parts.push('<text x="500" y="300" text-anchor="middle" fill="#ddd" font-size="22">上の「＋花火を追加」から花火を追加してください</text>');
             multiFireworks.forEach((fw, index) => {
-                const x = originX + fw.xOffset * scale;
+                const standX = originX + getStandXOffset(getFireworkStandId(fw)) * scale;
+                const x = originX + getFireworkAbsoluteX(fw) * scale;
                 const selected = multiDrag?.id === fw.id || selectedMultiId === fw.id;
                 // 扇形花火は玉が開かないので、打上軌道も開花円も描かず地面から扇を立ち上げる
                 if (normalizeFireworkPattern(fw.pattern) === 'fan') {
@@ -2349,9 +2534,9 @@
                 const y = groundY - fw.altitude * scale;
                 const radius = Math.max(10, getFireworkRadius(fw.size) * scale);
                 const color = getFireworkCssColor(fw.color);
-                const controlX = originX + (x - originX) * 0.42;
+                const controlX = standX + (x - standX) * 0.42;
                 const controlY = Math.min(groundY - 110, y + (groundY - y) * 0.25);
-                if(fw.showTrajectory!==false) parts.push(`<path d="M ${originX} ${groundY} Q ${controlX.toFixed(1)} ${controlY.toFixed(1)} ${x.toFixed(1)} ${y.toFixed(1)}" fill="none" stroke="#fff" stroke-width="2" opacity=".92"/>`);
+                if(fw.showTrajectory!==false) parts.push(`<path d="M ${standX.toFixed(1)} ${groundY} Q ${controlX.toFixed(1)} ${controlY.toFixed(1)} ${x.toFixed(1)} ${y.toFixed(1)}" fill="none" stroke="#fff" stroke-width="2" opacity=".92"/>`);
                 parts.push(`<g data-fw-id="${fw.id}" style="cursor:grab;" pointer-events="all">`);
                 parts.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${radius.toFixed(1)}" fill="${color}" fill-opacity="${fireworkRealMode||normalizeFireworkPattern(fw.pattern)==='senshoku-senrin'?'0':'.08'}" stroke="${selected?'#ffb000':color}" stroke-opacity="${fireworkRealMode?(selected?'.65':'0'):(normalizeFireworkPattern(fw.pattern)==='senshoku-senrin'?(selected?'.65':'0'):'1')}" stroke-width="${selected ? 5 : 3}"/>`);
                 if(normalizeFireworkPattern(fw.pattern)==='senshoku-senrin') {
@@ -2366,7 +2551,13 @@
                 el.onpointerdown = e => {
                     e.preventDefault();
                     // 押した時点ではまだ確定しない。動かせばドラッグ、動かさなければクリック＝選択。
-                    multiDrag = {id:Number(el.dataset.fwId), scale:getMultiEditorScale(), moved:false, startX:e.clientX, startY:e.clientY};
+                    multiDrag = {kind:'firework', id:Number(el.dataset.fwId), scale:getMultiEditorScale(), moved:false, startX:e.clientX, startY:e.clientY};
+                };
+            });
+            svg.querySelectorAll('[data-stand-id]').forEach(el => {
+                el.onpointerdown = e => {
+                    e.preventDefault();
+                    multiDrag = {kind:'stand', id:el.dataset.standId, scale:getMultiEditorScale(), moved:false, startX:e.clientX, startY:e.clientY};
                 };
             });
             updateEditorSelectionUI();
@@ -2385,9 +2576,19 @@
             const px = (e.clientX - rect.left) * 1000 / rect.width;
             const py = (e.clientY - rect.top) * 620 / rect.height;
             const scale = multiDrag.scale;
+            if (multiDrag.kind === 'stand') {
+                // 台1（＝筒場そのもの）は動かせない。台2以降は左右だけ動かす。
+                const standIndex = getEditingStandIndex(multiDrag.id);
+                if (standIndex <= 0) return;
+                multiStands[standIndex].xOffset = Math.round(((px - 500) / scale) * 2) / 2;
+                syncEditingSiteConfig();
+                renderMultiEditor();
+                return;
+            }
             const fw = multiFireworks.find(item => item.id === multiDrag.id);
             if (!fw) return;
-            fw.xOffset = Math.round(((px - 500) / scale) * 2) / 2;
+            // 左右は「乗っている台からの距離」として持つので、台の位置を引く
+            fw.xOffset = Math.round(((px - 500) / scale - getStandXOffset(getFireworkStandId(fw))) * 2) / 2;
             // 扇形花火は地面から立ち上がるので、上下には動かさない
             if (normalizeFireworkPattern(fw.pattern) !== 'fan') {
                 fw.altitude = Math.max(getFireworkRadius(fw.size), Math.round(((570 - py) / scale) * 2) / 2);
@@ -2399,9 +2600,16 @@
 
         function endMultiEditorDrag() {
             if (!multiDrag) return;
-            const {id, moved} = multiDrag;
+            const {kind, id, moved} = multiDrag;
             multiDrag = null;
-            selectedMultiId = id;
+            if (kind === 'stand') {
+                selectedStandId = id;
+                selectedMultiId = null;
+            } else {
+                selectedMultiId = id;
+                const fw = multiFireworks.find(item => item.id === id);
+                if (fw) selectedStandId = getFireworkStandId(fw);
+            }
             if (!moved) { renderMultiEditor(); return; }
             syncEditingSiteConfig();
             renderMultiEditor();
@@ -2411,7 +2619,7 @@
 
         // 何もない所を押したら選択を外す（ポップアップを開いている間は触らない）
         function clearMultiFireworkSelectionFromBackground(e) {
-            if (e.target.closest?.('[data-fw-id]')) return;
+            if (e.target.closest?.('[data-fw-id]') || e.target.closest?.('[data-stand-id]')) return;
             if (document.getElementById('fireworkDialog').open) return;
             multiDrag = null;
             selectedMultiId = null;
@@ -2777,6 +2985,8 @@
             editingLaunchSiteId = null;
             selectedMultiId = null;
             multiFireworks = [];
+            multiStands = [{id:1, xOffset:0}];
+            selectedStandId = 1;
             groupAngle = 0;
             multiDrag = null;
             document.getElementById('eventName').value = state.eventName || "";
@@ -3845,16 +4055,31 @@
                 launchElevationSum += originElev;
                 const config = getSiteGroupConfiguration(site);
                 const siteName = `筒場${siteIndex+1}`;
-                const bursts = config.fireworks.map((item,index) => buildBurstKml(item,index,origin,originElev,config.angle)).join('');
+                // 【変更 v3.6】台が複数あるときは台ごとのフォルダに分ける（1台だけなら今までどおり）
+                let bursts;
+                if (config.stands.length > 1) {
+                    let running = 0;
+                    bursts = config.stands.map((stand, standIndex) => {
+                        const items = config.fireworks.filter(item => item.standIndex === standIndex);
+                        if (!items.length) return '';
+                        const inner = items.map(item => buildBurstKml(item, running++, origin, originElev, config.angle)).join('');
+                        const standName = getStandDisplayName(siteIndex, standIndex);
+                        const standLatLng = getGroupOffsetLatLng(origin, parseFloat(stand.xOffset) || 0, config.angle);
+                        const standPoint = (standIndex === 0 || fireworksOnlyKmz) ? '' : `<Placemark><name>${escapeMarkup(standName)}</name><Point><altitudeMode>absolute</altitudeMode><coordinates>${standLatLng.lng},${standLatLng.lat},${originElev}</coordinates></Point></Placemark>`;
+                        return `<Folder><name>${escapeMarkup(standName)}</name>${standPoint}${inner}</Folder>`;
+                    }).join('');
+                } else {
+                    bursts = config.fireworks.map((item,index) => buildBurstKml(item,index,origin,originElev,config.angle)).join('');
+                }
                 if(fireworksOnlyKmz) {
                     config.fireworks.forEach((item,itemIndex)=>{
-                        const modelName=`${siteName} 花火${itemIndex+1} ${getFireworkPatternLabel(item.pattern)}`;
+                        const modelName=`${item.standName || siteName} 花火${itemIndex+1} ${getFireworkPatternLabel(item.pattern)}`;
                         const modelPath=`models/launch_${String(siteIndex+1).padStart(2,'0')}_firework_${String(itemIndex+1).padStart(3,'0')}.dae`;
                         const fireworkPosition=getGroupOffsetLatLng(origin,parseFloat(item.xOffset)||0,config.angle);
                         const isFan=normalizeFireworkPattern(item.pattern)==='fan';
                         const centerElevation=originElev+(isFan?0:getStoredAltitude(item));
                         const dae=buildFireworkDae(item,{
-                            modelName,eventName,siteName,fireworkIndex:itemIndex+1,
+                            modelName,eventName,siteName:item.standName || siteName,fireworkIndex:itemIndex+1,
                             launchLat:origin.lat,launchLon:origin.lng,launchElevation:originElev,siteAngle:config.angle,
                             fireworkLat:fireworkPosition.lat,fireworkLon:fireworkPosition.lng,fireworkElevation:centerElevation
                         });
